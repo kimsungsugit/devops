@@ -8,3 +8,4 @@ pytest-cache-files-*/
 tests/.codex_tmp/
 build/
 dist/
+docs/
