@@ -1,0 +1,10 @@
+*.zip
+*.log
+__pycache__/
+.pytest_cache/
+.tmp_pytest/
+.tmp_pytest_base/
+pytest-cache-files-*/
+tests/.codex_tmp/
+build/
+dist/
