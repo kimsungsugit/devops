@@ -200,3 +200,83 @@ def test_run_impact_update_executes_auto_and_flag_actions(tmp_path, monkeypatch)
     assert result["actions"]["sts"]["artifact_path"].endswith("sts_review.md")
     assert updated is not None
     assert updated.linked_docs.uds.endswith("uds.out")
+
+
+def test_run_impact_update_falls_back_to_file_based_change_types(tmp_path, monkeypatch):
+    from backend.schemas import ScmRegisterRequest
+    from backend.services import scm_registry
+    from workflow import impact_audit, impact_orchestrator
+
+    reg_path = tmp_path / "config" / "scm_registry.json"
+    audit_dir = tmp_path / "audit"
+    monkeypatch.setattr(scm_registry, "REGISTRY_PATH", reg_path)
+    monkeypatch.setattr(impact_audit, "AUDIT_DIR", audit_dir)
+    monkeypatch.setattr(impact_audit, "LOCK_PATH", audit_dir / ".run_lock")
+    scm_registry.register_entry(
+        ScmRegisterRequest(
+            id="hdpdm01",
+            name="HDPDM01",
+            scm_type="hash",
+            source_root=str(tmp_path / "src"),
+        )
+    )
+    monkeypatch.setattr(impact_orchestrator, "classify_changed_functions", lambda *args, **kwargs: {})
+
+    class _FakeRg:
+        @staticmethod
+        def generate_uds_source_sections(_source_root):
+            return {"call_map": {}, "function_details_by_name": {}}
+
+    monkeypatch.setitem(__import__("sys").modules, "report_generator", _FakeRg)
+
+    result = impact_orchestrator.run_impact_update(
+        ChangeTrigger(
+            trigger_type="local",
+            scm_id="hdpdm01",
+            source_root=str(tmp_path / "src"),
+            scm_type="hash",
+            base_ref="",
+            changed_files=["Sources/APP/Ap_DoorCtrl_PDS.c", "Sources/APP/Ap_DoorCtrl_PDS.h"],
+            dry_run=True,
+            targets=["uds", "sts"],
+            metadata={},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["changed_function_types"]["ap_doorctrl_pds"] == "HEADER"
+    assert result["actions"]["uds"]["mode"] == "AUTO"
+    assert result["actions"]["sts"]["mode"] == "FLAG"
+
+
+def test_update_linked_doc_preserves_other_paths(tmp_path, monkeypatch):
+    from backend.schemas import ScmLinkedDocs, ScmRegisterRequest
+    from backend.services import scm_registry
+    from workflow import impact_orchestrator
+
+    reg_path = tmp_path / "config" / "scm_registry.json"
+    monkeypatch.setattr(scm_registry, "REGISTRY_PATH", reg_path)
+    scm_registry.register_entry(
+        ScmRegisterRequest(
+            id="hdpdm01",
+            name="HDPDM01",
+            scm_type="hash",
+            source_root=str(tmp_path / "src"),
+            linked_docs=ScmLinkedDocs(
+                uds="old_uds.docx",
+                sts="old_sts.xlsx",
+                suts="old_suts.xlsx",
+                srs="srs.docx",
+                sds="sds.docx",
+                hsis="hsis.xlsx",
+            ),
+        )
+    )
+
+    impact_orchestrator._update_linked_doc("hdpdm01", "uds", "new_uds.docx")
+
+    entry = scm_registry.get_registry_entry("hdpdm01")
+    assert entry is not None
+    assert entry.linked_docs.uds == "new_uds.docx"
+    assert entry.linked_docs.sts == "old_sts.xlsx"
+    assert entry.linked_docs.suts == "old_suts.xlsx"

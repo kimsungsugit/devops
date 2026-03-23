@@ -55,7 +55,12 @@ def _discover_doc(name_token: str, suffixes: Set[str]) -> str | None:
 
 
 def _update_linked_doc(entry_id: str, field: str, path_text: str) -> None:
-    update_entry(entry_id, ScmUpdateRequest(linked_docs=ScmLinkedDocs(**{field: path_text})))
+    entry = get_registry_entry(entry_id)
+    if entry is None:
+        return
+    merged = entry.linked_docs.model_dump(mode="json")
+    merged[field] = path_text
+    update_entry(entry_id, ScmUpdateRequest(linked_docs=ScmLinkedDocs(**merged)))
 
 
 def _write_review_artifact(
@@ -262,6 +267,17 @@ def _selected_targets(targets: Iterable[str] | None) -> List[str]:
     return sorted(dict.fromkeys(values)) if values else ["sds", "sts", "suts", "uds"]
 
 
+def _fallback_changed_types_from_files(changed_files: List[str]) -> Dict[str, str]:
+    inferred: Dict[str, str] = {}
+    for path_text in changed_files:
+        name = Path(str(path_text or "").strip()).stem
+        if not name:
+            continue
+        kind = "HEADER" if str(path_text).lower().endswith(".h") else "BODY"
+        inferred[name.lower()] = kind
+    return inferred
+
+
 def _action_for_target(target: str, changed_types: Dict[str, str], changed_files: List[str]) -> str:
     decision = "-"
     for change_type in changed_types.values():
@@ -331,6 +347,8 @@ def run_impact_update(
             scm_type=trigger.scm_type,
             base_ref=trigger.base_ref,
         )
+        if not changed_types and trigger.changed_files:
+            changed_types = _fallback_changed_types_from_files(trigger.changed_files)
 
         if entry and entry.source_root:
             import report_generator as rg
