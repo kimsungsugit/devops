@@ -162,3 +162,51 @@ docker run -p 7000:7000 -e GOOGLE_API_KEY=your-key devops-toolkit
 
 내부 프로젝트 - 비공개
 "# devops" 
+
+## GitHub Project Documents
+
+Trackable project documents for GitHub are stored in [`project_docs/`](/D:/Project/devops/260105/project_docs/README.md).
+
+Recommended locations:
+
+- Daily reports: [`project_docs/daily_reports/`](/D:/Project/devops/260105/project_docs/daily_reports/README.md)
+- Weekly reports: [`project_docs/weekly_reports/`](/D:/Project/devops/260105/project_docs/weekly_reports/README.md)
+- Change history: [`project_docs/change_history/`](/D:/Project/devops/260105/project_docs/change_history/README.md)
+- Design docs: [`project_docs/design/`](/D:/Project/devops/260105/project_docs/design/README.md)
+- Change requests: [`project_docs/change_requests/`](/D:/Project/devops/260105/project_docs/change_requests/README.md)
+
+## Startup Reports
+
+To generate startup reports manually:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_startup_reports.ps1
+```
+
+To generate and open the daily report automatically in Notepad:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_startup_reports.ps1 -OpenAfter
+```
+
+To install it into Windows Startup:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_morning_report_startup.ps1
+```
+
+Generated output:
+
+- `reports/daily_brief/YYYY-MM-DD-daily-report.md`
+- `reports/plans/YYYY-MM-DD-next-plan.md`
+- `reports/jira/YYYY-MM-DD-jira-plan.md`
+- `reports/jira/YYYY-MM-DD-jira-result.md`
+- `reports/dashboard/YYYY-MM-DD-startup-dashboard.html`
+- `reports/weekly_brief/YYYY-MM-DD-weekly-report.md` on Friday mornings
+- `reports/monthly_brief/YYYY-MM-monthly-report.md` on the first Monday after month end
+
+Optional integrations:
+
+- `GITHUB_TOKEN`: enrich reports with GitHub API commit / PR metadata
+- `GOOGLE_API_KEY` or `OAI_CONFIG_LIST`: generate higher-quality Korean summaries with Gemini
+- Jira-ready documents are generated under `reports/jira/` for upload or copy/paste into Jira issues
