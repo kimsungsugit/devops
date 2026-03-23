@@ -97,3 +97,21 @@ def test_get_changed_functions_supports_svn_unified_diff(monkeypatch, tmp_path):
 
     assert result == {"Lin_Run"}
     assert calls == [("123:124", "svn", "lin.c")]
+
+
+def test_get_changed_files_supports_svn_working_copy_status(monkeypatch, tmp_path):
+    from workflow import delta_update
+
+    class _Result:
+        returncode = 0
+        stdout = "M       Sources/APP/Ap_BuzzerCtrl_PDS.c\n?       notes.txt\nM       Sources/APP/Ap_BuzzerCtrl_it_PDS.h\n"
+
+    def _fake_run(cmd, cwd, capture_output, text, timeout):
+        assert cmd == ["svn", "status"]
+        return _Result()
+
+    monkeypatch.setattr(delta_update.subprocess, "run", _fake_run)
+
+    result = delta_update.get_changed_files(str(tmp_path), scm_type="svn", base_ref="")
+
+    assert result == ["Sources/APP/Ap_BuzzerCtrl_PDS.c", "Sources/APP/Ap_BuzzerCtrl_it_PDS.h"]

@@ -42,7 +42,10 @@ def _run_unified_diff(
     root = Path(project_root)
 
     if scm_type == "svn":
-        cmd = ["svn", "diff", "-r", base_ref, "--diff-cmd", "diff", "-x", "-U3"]
+        cmd = ["svn", "diff"]
+        if str(base_ref or "").strip():
+            cmd.extend(["-r", base_ref])
+        cmd.extend(["--diff-cmd", "diff", "-x", "-U3"])
         if file_path:
             cmd.append(file_path)
     else:
@@ -81,17 +84,22 @@ def get_changed_files(
             if result.returncode == 0:
                 changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
         elif scm_type == "svn":
+            if str(base_ref or "").strip():
+                cmd = ["svn", "diff", "--summarize", "-r", base_ref]
+            else:
+                cmd = ["svn", "status"]
             result = subprocess.run(
-                ["svn", "diff", "--summarize", "-r", base_ref],
+                cmd,
                 cwd=str(root), capture_output=True, text=True, timeout=30,
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     parts = line.split()
-                    if len(parts) >= 2:
-                        fpath = parts[-1].strip()
-                        if fpath.endswith((".c", ".h")):
-                            changed.append(fpath)
+                    if not parts:
+                        continue
+                    fpath = parts[-1].strip()
+                    if fpath.endswith((".c", ".h")):
+                        changed.append(fpath)
     except Exception as e:
         logger.warning("Failed to get changed files via %s: %s", scm_type, e)
 

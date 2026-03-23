@@ -39,8 +39,9 @@ def build_registry_trigger(
         raise KeyError(scm_id)
 
     changed_files = [str(x).strip() for x in (manual_changed_files or []) if str(x).strip()]
-    resolved_base_ref = str(base_ref or entry.base_ref or "HEAD~1").strip()
     scm_type = str(entry.scm_type or "git").lower()
+    default_base_ref = "" if scm_type == "svn" else "HEAD~1"
+    resolved_base_ref = str(base_ref or entry.base_ref or default_base_ref).strip()
     if not changed_files:
         if scm_type in {"git", "svn"} and str(entry.source_root or "").strip():
             changed_files = get_changed_files(
