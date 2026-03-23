@@ -129,6 +129,98 @@ class TestValidationHelpers:
         assert _has_doc_output_slot("Foo(uint8 buf[8])") is True
         assert _has_doc_output_slot("Foo(void (*cb)(void))") is False
 
+    def test_confidence_report_includes_evidence_mix_sections(self, tmp_path):
+        from report_gen.validation import generate_asil_related_confidence_report
+
+        payload = {
+            "function_details_by_name": {
+                "MotorDispatcher": {
+                    "id": "SwUFn_0198",
+                    "name": "MotorDispatcher",
+                    "description": "Motor control function",
+                    "description_source": "sds",
+                    "description_source_detail": "hsis+sds_match",
+                    "description_evidence_sources": ["sds", "code", "hsis"],
+                    "asil": "A",
+                    "asil_source": "sds",
+                    "related": "SwTR_0608",
+                    "related_source": "sds",
+                    "related_source_detail": "hsis+sds",
+                    "related_evidence_sources": ["sds", "hsis"],
+                }
+            }
+        }
+
+        out = tmp_path / "confidence.md"
+        generate_asil_related_confidence_report(payload, str(out))
+        text = out.read_text(encoding="utf-8")
+
+        assert "## Description Evidence Mix" in text
+        assert "## Related ID Evidence Mix" in text
+        assert "## Description Source Detail" in text
+        assert "## Related ID Source Detail" in text
+        assert "## Operating Judgment" in text
+        assert "Canonical policy: `doc-first` with `code/HSIS` as supporting evidence." in text
+
+    def test_confidence_report_keeps_payload_source_when_docx_exists(self, tmp_path, monkeypatch):
+        from report_gen.validation import generate_asil_related_confidence_report
+
+        fake_docx = tmp_path / "generated.docx"
+        fake_docx.write_bytes(b"stub")
+
+        payload = {
+            "function_details_by_name": {
+                "MotorDispatcher": {
+                    "id": "SwUFn_0198",
+                    "name": "MotorDispatcher",
+                    "description": "Motor control function",
+                    "description_source": "sds",
+                    "comment_description": "Comment text that should not override canonical payload source",
+                    "asil": "A",
+                    "asil_source": "sds",
+                    "related": "SwTR_0608",
+                    "related_source": "sds",
+                }
+            }
+        }
+
+        class _FakeDoc:
+            pass
+
+        monkeypatch.setattr("docx.Document", lambda *_args, **_kwargs: _FakeDoc())
+        monkeypatch.setattr(
+            "report_gen.validation._extract_function_info_from_docx",
+            lambda _doc: {
+                "SwUFn_0198": {
+                    "id": "SwUFn_0198",
+                    "name": "MotorDispatcher",
+                    "description": "Reference description",
+                    "related": "SwTR_9999",
+                }
+            },
+        )
+
+        out = tmp_path / "confidence_keep_payload.md"
+        generate_asil_related_confidence_report(payload, str(out), str(fake_docx))
+        text = out.read_text(encoding="utf-8")
+
+        assert "- SDS: `1` / `1` (100.0%)" in text
+
+    def test_remove_docx_paragraphs_keeps_na_in_function_info_tables(self):
+        import docx
+        from report_gen.docx_builder import _remove_docx_paragraphs
+
+        doc = docx.Document()
+        table = doc.add_table(rows=2, cols=3)
+        for cell in table.rows[0].cells:
+            cell.text = "[ Function Information ]"
+        table.cell(1, 0).text = "Called Function"
+        table.cell(1, 2).text = "N/A"
+
+        _remove_docx_paragraphs(doc, ["N/A"])
+
+        assert table.cell(1, 2).text == "N/A"
+
 
 class TestRequirementsEnrichment:
     def test_related_and_prototype_assist_sds_match(self, monkeypatch):

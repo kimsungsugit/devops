@@ -93,6 +93,16 @@ def _has_doc_output_slot(prototype: str) -> bool:
             return True
     return False
 
+
+def _has_doc_input_slot(prototype: str) -> bool:
+    proto = " ".join(str(prototype or "").split())
+    if not proto or "(" not in proto or ")" not in proto:
+        return False
+    params = proto.split("(", 1)[1].rsplit(")", 1)[0].strip()
+    if not params or params.lower() == "void":
+        return False
+    return True
+
 def validate_uds_docx_structure(docx_path: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "docx_path": docx_path,
@@ -618,8 +628,7 @@ def generate_uds_field_quality_gate_report(
         if related_value.upper() == "TBD":
             tbd_related += 1
         proto = str(row.get("prototype") or "").strip()
-        proto_l = proto.lower()
-        has_input_slot = bool(proto and "(" in proto and ")" in proto and "void" not in proto_l)
+        has_input_slot = _has_doc_input_slot(proto)
         if has_input_slot:
             input_applicable += 1
         if _filled_list(row.get("inputs")):
@@ -1227,14 +1236,18 @@ def generate_asil_related_confidence_report(
                     cur_desc = str(info.get("description") or "").strip()
                     cur_asil = str(info.get("asil") or "").strip()
                     cur_rel = str(info.get("related") or "").strip()
+                    cur_desc_src = str(info.get("description_source") or "").strip().lower()
+                    cur_rel_src = str(info.get("related_source") or "").strip().lower()
                     doc_desc = str(row.get("description") or "").strip()
                     doc_asil = str(row.get("asil") or "").strip()
                     doc_rel = str(row.get("related") or "").strip()
                     comment_desc = str(info.get("comment_description") or "").strip()
-                    if comment_desc and not _is_generic_description(comment_desc):
+                    weak_desc_src = cur_desc_src in {"", "inference", "rule"}
+                    weak_rel_src = cur_rel_src in {"", "inference", "rule"}
+                    if comment_desc and not _is_generic_description(comment_desc) and weak_desc_src:
                         info["description"] = comment_desc
                         info["description_source"] = "comment"
-                    elif doc_desc and doc_desc.upper() not in {"N/A", "TBD", "-"}:
+                    elif doc_desc and doc_desc.upper() not in {"N/A", "TBD", "-"} and weak_desc_src:
                         # Prioritize explicit document text over inferred prose.
                         if (not cur_desc) or _is_generic_description(cur_desc):
                             info["description"] = doc_desc
@@ -1242,7 +1255,7 @@ def generate_asil_related_confidence_report(
                     if (not cur_asil or cur_asil in {"TBD", "N/A", "-"}) and doc_asil:
                         info["asil"] = doc_asil
                         info["asil_source"] = "sds"
-                    if (not cur_rel or cur_rel in {"TBD", "N/A", "-"}) and doc_rel:
+                    if (not cur_rel or cur_rel in {"TBD", "N/A", "-"}) and doc_rel and weak_rel_src:
                         info["related"] = doc_rel
                         if re.search(r"\bSw(?:TR|TSR|NTR|NTSR|CNF|EI|ST|STR|Fn|TK)_\d+\b", doc_rel):
                             info["related_source"] = "srs"
@@ -1272,6 +1285,10 @@ def generate_asil_related_confidence_report(
 
     def _norm_src(v: Any) -> str:
         s = str(v or "").strip().lower()
+        if s == "sds_match":
+            return "sds"
+        if s == "hsis":
+            return "sds"
         return s if s in src_labels else "inference"
 
     def _score_for(info: Dict[str, Any]) -> float:
@@ -1313,6 +1330,20 @@ def generate_asil_related_confidence_report(
     desc_count: Dict[str, int] = {}
     asil_count: Dict[str, int] = {}
     rel_count: Dict[str, int] = {}
+    desc_evidence_count: Dict[str, int] = {}
+    rel_evidence_count: Dict[str, int] = {}
+    desc_detail_count: Dict[str, int] = {}
+    rel_detail_count: Dict[str, int] = {}
+    op_counts: Dict[str, int] = {
+        "desc_canonical_doc": 0,
+        "desc_backed_by_code": 0,
+        "desc_backed_by_hsis": 0,
+        "desc_doc_only": 0,
+        "rel_canonical_doc": 0,
+        "rel_backed_by_code": 0,
+        "rel_backed_by_hsis": 0,
+        "rel_doc_only": 0,
+    }
     low_conf: List[Tuple[float, str, str, str, str, str, str]] = []
     all_rows: List[Tuple[float, str, str, str, str, str, str, str, str, str, str]] = []
     by_swcom: Dict[str, Dict[str, int]] = {}
@@ -1333,6 +1364,38 @@ def generate_asil_related_confidence_report(
         desc_count[ds] = desc_count.get(ds, 0) + 1
         asil_count[asrc] = asil_count.get(asrc, 0) + 1
         rel_count[rsrc] = rel_count.get(rsrc, 0) + 1
+        desc_detail = str(info.get("description_source_detail") or "").strip().lower()
+        rel_detail = str(info.get("related_source_detail") or "").strip().lower()
+        if desc_detail:
+            desc_detail_count[desc_detail] = desc_detail_count.get(desc_detail, 0) + 1
+        if rel_detail:
+            rel_detail_count[rel_detail] = rel_detail_count.get(rel_detail, 0) + 1
+        for src in info.get("description_evidence_sources") or []:
+            s = str(src or "").strip().lower()
+            if s:
+                desc_evidence_count[s] = desc_evidence_count.get(s, 0) + 1
+        for src in info.get("related_evidence_sources") or []:
+            s = str(src or "").strip().lower()
+            if s:
+                rel_evidence_count[s] = rel_evidence_count.get(s, 0) + 1
+        desc_evidence_set = {str(src or "").strip().lower() for src in (info.get("description_evidence_sources") or []) if str(src or "").strip()}
+        rel_evidence_set = {str(src or "").strip().lower() for src in (info.get("related_evidence_sources") or []) if str(src or "").strip()}
+        if ds in {"sds", "comment", "reference"}:
+            op_counts["desc_canonical_doc"] += 1
+            if "code" in desc_evidence_set:
+                op_counts["desc_backed_by_code"] += 1
+            if "hsis" in desc_evidence_set:
+                op_counts["desc_backed_by_hsis"] += 1
+            if "code" not in desc_evidence_set and "hsis" not in desc_evidence_set:
+                op_counts["desc_doc_only"] += 1
+        if rsrc in {"sds", "srs", "reference"}:
+            op_counts["rel_canonical_doc"] += 1
+            if "code" in rel_evidence_set:
+                op_counts["rel_backed_by_code"] += 1
+            if "hsis" in rel_evidence_set:
+                op_counts["rel_backed_by_hsis"] += 1
+            if "code" not in rel_evidence_set and "hsis" not in rel_evidence_set:
+                op_counts["rel_doc_only"] += 1
         score = _score_for(info)
         all_rows.append(
             (
@@ -1393,6 +1456,37 @@ def generate_asil_related_confidence_report(
     lines.extend(_dump_counter("Description Source", desc_count))
     lines.extend(_dump_counter("ASIL Source", asil_count))
     lines.extend(_dump_counter("Related ID Source", rel_count))
+    lines.extend(_dump_counter("Description Evidence Mix", desc_evidence_count))
+    lines.extend(_dump_counter("Related ID Evidence Mix", rel_evidence_count))
+    lines.extend(_dump_counter("Description Source Detail", desc_detail_count))
+    lines.extend(_dump_counter("Related ID Source Detail", rel_detail_count))
+    lines.append("## Operating Judgment")
+    lines.append("- Canonical policy: `doc-first` with `code/HSIS` as supporting evidence.")
+    lines.append(
+        f"- Description canonical(doc-backed): `{op_counts['desc_canonical_doc']}` / `{total}` ({_ratio(op_counts['desc_canonical_doc'])})"
+    )
+    lines.append(
+        f"- Description canonical + code evidence: `{op_counts['desc_backed_by_code']}` / `{total}` ({_ratio(op_counts['desc_backed_by_code'])})"
+    )
+    lines.append(
+        f"- Description canonical + HSIS evidence: `{op_counts['desc_backed_by_hsis']}` / `{total}` ({_ratio(op_counts['desc_backed_by_hsis'])})"
+    )
+    lines.append(
+        f"- Description doc-only residual: `{op_counts['desc_doc_only']}` / `{total}` ({_ratio(op_counts['desc_doc_only'])})"
+    )
+    lines.append(
+        f"- Related canonical(doc-backed): `{op_counts['rel_canonical_doc']}` / `{total}` ({_ratio(op_counts['rel_canonical_doc'])})"
+    )
+    lines.append(
+        f"- Related canonical + code evidence: `{op_counts['rel_backed_by_code']}` / `{total}` ({_ratio(op_counts['rel_backed_by_code'])})"
+    )
+    lines.append(
+        f"- Related canonical + HSIS evidence: `{op_counts['rel_backed_by_hsis']}` / `{total}` ({_ratio(op_counts['rel_backed_by_hsis'])})"
+    )
+    lines.append(
+        f"- Related doc-only residual: `{op_counts['rel_doc_only']}` / `{total}` ({_ratio(op_counts['rel_doc_only'])})"
+    )
+    lines.append("")
     lines.append("## Component (SwCom) Low Confidence Ratio")
     if not by_swcom:
         lines.append("- none")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -20,6 +21,31 @@ from workflow import rag as ragmod
 from workflow.ai import load_oai_config
 from workflow.rag import get_kb
 import report_generator as rg
+
+
+def _iter_udf_identifiers(info: dict) -> set[str]:
+    used_vars: set[str] = set()
+    for field in ("globals_global", "globals_static", "inputs", "outputs"):
+        for item in info.get(field) or []:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            token = text
+            if text.startswith("["):
+                parts = text.split()
+                token = parts[-1] if parts else text
+            token = token.split(".", 1)[0].split("->", 1)[0]
+            token = re.sub(r"\s*[:(].*$", "", token).strip(" ,;")
+            if token and re.match(r"^[A-Za-z_]\w+$", token):
+                used_vars.add(token)
+    return used_vars
+
+
+def _append_evidence(info: dict, field: str, value: str) -> None:
+    values = [str(v).strip() for v in (info.get(field) or []) if str(v).strip()]
+    if value not in values:
+        values.append(value)
+    info[field] = values
 
 
 def _read_xlsx_rows(path: Path) -> str:
@@ -93,33 +119,57 @@ def _enrich_source_sections_with_docs(
                 for info in details.values():
                     if not isinstance(info, dict):
                         continue
-                    used_vars: set[str] = set()
-                    for field in ("globals_global", "globals_static", "inputs", "outputs"):
-                        for item in info.get(field) or []:
-                            text = str(item or "").strip()
-                            if not text:
-                                continue
-                            token = text.split()[-1] if text.startswith("[") else text
-                            token = token.split(".", 1)[0].split("->", 1)[0]
-                            if re.match(r"^[A-Za-z_]\w+$", token):
-                                used_vars.add(token)
+                    used_vars = _iter_udf_identifiers(info)
+                    has_code_evidence = bool(
+                        (info.get("calls_list") or [])
+                        or (info.get("globals_global") or [])
+                        or (info.get("globals_static") or [])
+                        or (info.get("inputs") or [])
+                        or (info.get("outputs") or [])
+                        or str(info.get("logic_flow") or "").strip()
+                    )
+                    if has_code_evidence:
+                        _append_evidence(info, "description_evidence_sources", "code")
+                        _append_evidence(info, "related_evidence_sources", "code")
                     matched = [hsis_by_var[v] for v in used_vars if v in hsis_by_var]
+                    if has_code_evidence and str(info.get("description_source") or "").strip() in {"sds", "sds_match"}:
+                        info["description_source_detail"] = "code+sds_match"
                     if not matched:
                         continue
+                    hsis_signal_names = list(
+                        dict.fromkeys(str(sig.get("signal_name") or "").strip() for sig in matched if str(sig.get("signal_name") or "").strip())
+                    )
+                    hsis_related_ids = list(
+                        dict.fromkeys(str(sig.get("related_id") or "").strip() for sig in matched if str(sig.get("related_id") or "").strip())
+                    )
+                    info["hsis_match_count"] = len(matched)
+                    if hsis_signal_names:
+                        info["hsis_signal_names"] = hsis_signal_names
+                    if hsis_related_ids:
+                        info["hsis_related_ids"] = hsis_related_ids
+                    _append_evidence(info, "description_evidence_sources", "hsis")
+                    _append_evidence(info, "related_evidence_sources", "hsis")
                     if str(info.get("description_source") or "").strip() in {"", "inference"}:
                         info["description_source"] = "hsis"
+                    elif str(info.get("description_source") or "").strip() in {"sds", "sds_match"}:
+                        info["description_source_detail"] = "hsis+sds_match"
                     current_related = str(info.get("related") or "").strip()
                     if not current_related or current_related.upper() in {"TBD", "N/A", "-"}:
-                        related_ids = [
-                            str(sig.get("related_id") or "").strip()
-                            for sig in matched
-                            if str(sig.get("related_id") or "").strip()
-                        ]
-                        if related_ids:
-                            info["related"] = related_ids[0]
+                        if hsis_related_ids:
+                            info["related"] = hsis_related_ids[0]
                             info["related_source"] = "hsis"
+                    elif str(info.get("related_source") or "").strip() == "sds":
+                        info["related_source_detail"] = "hsis+sds"
         except Exception:
             pass
+
+    for info in details.values():
+        if not isinstance(info, dict):
+            continue
+        if str(info.get("description_source") or "").strip() in {"sds", "sds_match"}:
+            _append_evidence(info, "description_evidence_sources", "sds")
+        if str(info.get("related_source") or "").strip() in {"sds", "hsis", "srs"}:
+            _append_evidence(info, "related_evidence_sources", str(info.get("related_source") or "").strip())
 
     rebuilt_by_name: dict[str, dict] = {}
     for info in details.values():

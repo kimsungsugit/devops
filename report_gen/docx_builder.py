@@ -1246,12 +1246,14 @@ def _remove_docx_paragraphs(doc, texts: List[str]) -> None:
         pass
     try:
         for table in doc.tables:
+            header_cells = [c.text.strip() for c in table.rows[0].cells] if table.rows else []
+            is_function_info = any("Function Information" in c for c in header_cells)
             for row in table.rows:
                 for cell in row.cells:
-                    if (cell.text or "").strip() in targets:
+                    if not is_function_info and (cell.text or "").strip() in targets:
                         cell.text = ""
                     for paragraph in cell.paragraphs:
-                        if (paragraph.text or "").strip() in targets:
+                        if not is_function_info and (paragraph.text or "").strip() in targets:
                             paragraph.text = ""
     except Exception:
         pass
@@ -3488,6 +3490,5 @@ def generate_uds_docx(
 
     doc.save(str(out))
     return str(out)
-
 
 
