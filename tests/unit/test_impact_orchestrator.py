@@ -38,8 +38,8 @@ def test_run_impact_update_dry_run_builds_auto_and_flag_actions(tmp_path, monkey
                 "function_details_by_name": {
                     "door_run": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
                     "door_init": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
-                    "door_helper": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
-                    "door_leaf": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
+                    "door_helper": {"module_name": "door", "file": "Sources/APP/Ap_Door_Helper.c"},
+                    "door_leaf": {"module_name": "door", "file": "Sources/APP/Ap_Door_Leaf.c"},
                 },
             }
 
@@ -331,3 +331,19 @@ def test_write_review_artifact_includes_context_and_linked_summary(tmp_path, mon
     assert "Linked test cases" in text
     assert "Ap_BuzzerCtrl" in text
     assert "SwTR_0202" in text
+
+
+def test_resolve_changed_types_to_functions_uses_matching_source_file():
+    from workflow import impact_orchestrator
+
+    resolved = impact_orchestrator._resolve_changed_types_to_functions(
+        {"ap_buzzerctrl_pds": "BODY"},
+        ["Sources/APP/Ap_BuzzerCtrl_PDS.c"],
+        {
+            "buzzer_run": {"file": "D:/Project/Ados/PDS_64_RD/Sources/APP/Ap_BuzzerCtrl_PDS.c"},
+            "buzzer_init": {"file": "D:/Project/Ados/PDS_64_RD/Sources/APP/Ap_BuzzerCtrl_PDS.c"},
+            "door_run": {"file": "D:/Project/Ados/PDS_64_RD/Sources/APP/Ap_DoorCtrl_PDS.c"},
+        },
+    )
+
+    assert resolved == {"buzzer_run": "BODY", "buzzer_init": "BODY"}

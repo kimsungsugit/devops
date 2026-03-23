@@ -354,6 +354,30 @@ def _fallback_changed_types_from_files(changed_files: List[str]) -> Dict[str, st
     return inferred
 
 
+def _resolve_changed_types_to_functions(
+    changed_types: Dict[str, str],
+    changed_files: List[str],
+    by_name: Dict[str, Dict[str, Any]],
+) -> Dict[str, str]:
+    if not changed_types or not by_name:
+        return changed_types
+    resolved: Dict[str, str] = {}
+    for path_text in changed_files:
+        raw = str(path_text or "").strip()
+        if not raw:
+            continue
+        kind = "HEADER" if raw.lower().endswith(".h") else "BODY"
+        raw_norm = raw.replace("\\", "/").lower()
+        raw_name = Path(raw_norm).name
+        for func_name, info in by_name.items():
+            file_path = str(info.get("file") or "").replace("\\", "/").lower()
+            if not file_path:
+                continue
+            if file_path.endswith(raw_norm) or file_path.endswith(raw_name):
+                resolved[func_name] = kind
+    return resolved or changed_types
+
+
 def _action_for_target(target: str, changed_types: Dict[str, str], changed_files: List[str]) -> str:
     decision = "-"
     for change_type in changed_types.values():
@@ -432,6 +456,7 @@ def run_impact_update(
             sections = rg.generate_uds_source_sections(entry.source_root)
             by_name_raw = sections.get("function_details_by_name", {}) or {}
             by_name = {str(k).strip().lower(): v for k, v in by_name_raw.items() if isinstance(v, dict)}
+            changed_types = _resolve_changed_types_to_functions(changed_types, trigger.changed_files, by_name)
             neighbors = _build_neighbors(
                 sections.get("call_map", {}) or {},
                 by_name,
