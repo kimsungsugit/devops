@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from workflow.change_trigger import ChangeTrigger
+from pathlib import Path
 
 
 def test_run_impact_update_dry_run_builds_auto_and_flag_actions(tmp_path, monkeypatch):
@@ -176,7 +177,7 @@ def test_run_impact_update_executes_auto_and_flag_actions(tmp_path, monkeypatch)
     monkeypatch.setattr(
         impact_orchestrator,
         "_write_review_artifact",
-        lambda target, trigger, changed_types, impact_groups, linked_doc="": str(tmp_path / f"{target}_review.md"),
+        lambda target, trigger, changed_types, impact_groups, by_name=None, linked_doc="": str(tmp_path / f"{target}_review.md"),
     )
 
     result = impact_orchestrator.run_impact_update(
@@ -280,3 +281,53 @@ def test_update_linked_doc_preserves_other_paths(tmp_path, monkeypatch):
     assert entry.linked_docs.uds == "new_uds.docx"
     assert entry.linked_docs.sts == "old_sts.xlsx"
     assert entry.linked_docs.suts == "old_suts.xlsx"
+
+
+def test_write_review_artifact_includes_context_and_linked_summary(tmp_path, monkeypatch):
+    from workflow import impact_orchestrator
+    from workflow.change_trigger import ChangeTrigger
+
+    monkeypatch.setattr(impact_orchestrator, "REPO_ROOT", tmp_path)
+    linked_doc = tmp_path / "reports" / "sts" / "sts_eval.xlsx"
+    linked_doc.parent.mkdir(parents=True, exist_ok=True)
+    linked_doc.write_text("", encoding="utf-8")
+    linked_doc.with_suffix(".payload.json").write_text(
+        """
+        {
+          "test_case_count": 241,
+          "quality_report": {"requirement_coverage": {"pct": 100.0}},
+          "trace_coverage": {"pct": 84.6}
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    out = impact_orchestrator._write_review_artifact(
+        "sts",
+        ChangeTrigger(
+            trigger_type="local",
+            scm_id="hdpdm01",
+            source_root=str(tmp_path / "src"),
+            scm_type="hash",
+            base_ref="",
+            changed_files=["Sources/APP/Ap_BuzzerCtrl_PDS.c"],
+            dry_run=False,
+            targets=["sts"],
+            metadata={},
+        ),
+        {"ap_buzzerctrl_pds": "BODY"},
+        {"direct": ["ap_buzzerctrl_pds"], "indirect_1hop": [], "indirect_2hop": []},
+        {
+            "ap_buzzerctrl_pds": {
+                "module_name": "Ap_BuzzerCtrl",
+                "file": "Sources/APP/Ap_BuzzerCtrl_PDS.c",
+                "related": "SwTR_0202, SwEI_0301",
+            }
+        },
+        str(linked_doc),
+    )
+
+    text = Path(out).read_text(encoding="utf-8")
+    assert "Linked test cases" in text
+    assert "Ap_BuzzerCtrl" in text
+    assert "SwTR_0202" in text

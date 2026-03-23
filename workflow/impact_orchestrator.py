@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -54,6 +56,45 @@ def _discover_doc(name_token: str, suffixes: Set[str]) -> str | None:
     return None
 
 
+def _load_json(path: Path) -> Dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _extract_req_ids(info: Dict[str, Any]) -> List[str]:
+    text = " ".join(
+        [
+            str(info.get("related") or ""),
+            str(info.get("comment_related") or ""),
+            str(info.get("srs_req_ids") or ""),
+            ", ".join(str(x) for x in (info.get("hsis_related_ids") or [])),
+        ]
+    )
+    reqs = re.findall(r"\bSw(?:TR|TSR|NTR|NTSR|CNF|EI|ST|STR|Fn|TK|Com)_\d+\b", text)
+    return list(dict.fromkeys(reqs))
+
+
+def _load_linked_doc_summary(linked_doc: str) -> Dict[str, Any]:
+    if not linked_doc:
+        return {}
+    payload_path = Path(linked_doc).with_suffix(".payload.json")
+    if not payload_path.exists():
+        return {}
+    payload = _load_json(payload_path)
+    quality = payload.get("quality_report") if isinstance(payload.get("quality_report"), dict) else {}
+    trace = payload.get("trace_coverage") if isinstance(payload.get("trace_coverage"), dict) else {}
+    req_cov = quality.get("requirement_coverage") if isinstance(quality.get("requirement_coverage"), dict) else {}
+    return {
+        "payload_path": str(payload_path),
+        "test_case_count": payload.get("test_case_count") or quality.get("total_test_cases") or "",
+        "requirement_coverage_pct": req_cov.get("pct", ""),
+        "trace_coverage_pct": trace.get("pct", ""),
+    }
+
+
 def _update_linked_doc(entry_id: str, field: str, path_text: str) -> None:
     entry = get_registry_entry(entry_id)
     if entry is None:
@@ -68,11 +109,29 @@ def _write_review_artifact(
     trigger: ChangeTrigger,
     changed_types: Dict[str, str],
     impact_groups: Dict[str, List[str]],
+    by_name: Dict[str, Dict[str, Any]] | None = None,
     linked_doc: str = "",
 ) -> str:
     review_dir = REPO_ROOT / "reports" / "impact_audit"
     review_dir.mkdir(parents=True, exist_ok=True)
     out_path = review_dir / f"{target}_review_required_{_ts()}.md"
+    by_name = by_name or {}
+    doc_summary = _load_linked_doc_summary(linked_doc)
+    modules: List[str] = []
+    files: List[str] = []
+    related_ids: List[str] = []
+    for func in impact_groups.get("direct", []) or []:
+        info = by_name.get(str(func).lower()) or {}
+        mod = str(info.get("module_name") or "").strip()
+        fp = str(info.get("file") or "").strip()
+        if mod:
+            modules.append(mod)
+        if fp:
+            files.append(fp)
+        related_ids.extend(_extract_req_ids(info))
+    modules = list(dict.fromkeys(modules))
+    files = list(dict.fromkeys(files))
+    related_ids = list(dict.fromkeys(related_ids))
     lines = [
         f"# {target.upper()} Review Required",
         "",
@@ -81,9 +140,22 @@ def _write_review_artifact(
         f"- Source root: `{trigger.source_root}`",
         f"- Base ref: `{trigger.base_ref}`",
         f"- Linked document: `{linked_doc or '-'}`",
-        "",
-        "## Changed Files",
     ]
+    if doc_summary:
+        lines.extend(
+            [
+                f"- Linked payload: `{doc_summary.get('payload_path') or '-'}`",
+                f"- Linked test cases: `{doc_summary.get('test_case_count') or '-'}`",
+                f"- Linked requirement coverage: `{doc_summary.get('requirement_coverage_pct') or '-'}`",
+                f"- Linked trace coverage: `{doc_summary.get('trace_coverage_pct') or '-'}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Changed Files",
+        ]
+    )
     lines.extend([f"- `{item}`" for item in trigger.changed_files] or ["- none"])
     lines.extend(["", "## Changed Functions"])
     if changed_types:
@@ -91,6 +163,10 @@ def _write_review_artifact(
             lines.append(f"- `{func}` : `{kind}`")
     else:
         lines.append("- none")
+    lines.extend(["", "## Context"])
+    lines.append(f"- Modules: `{', '.join(modules) if modules else '-'}`")
+    lines.append(f"- Source files: `{', '.join(files[:6]) if files else '-'}`")
+    lines.append(f"- Related requirements: `{', '.join(related_ids[:12]) if related_ids else '-'}`")
     lines.extend(["", "## Impact"])
     lines.append(f"- direct: `{len(impact_groups.get('direct', []))}`")
     lines.append(f"- indirect_1hop: `{len(impact_groups.get('indirect_1hop', []))}`")
@@ -414,6 +490,7 @@ def run_impact_update(
                         trigger,
                         changed_types,
                         impact_groups,
+                        by_name,
                         getattr(linked_docs, target, ""),
                     )
                     info["artifact_path"] = artifact_path
