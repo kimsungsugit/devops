@@ -87,6 +87,79 @@ class JenkinsScmInfoRequest(BaseModel):
     scm_password: str = ""
 
 
+class JenkinsImpactTriggerRequest(BaseModel):
+    scm_id: str
+    build_number: int = 0
+    job_url: str = ""
+    base_ref: str = ""
+    dry_run: bool = False
+    targets: List[str] = Field(default_factory=list)
+
+
+class ScmLinkedDocs(BaseModel):
+    uds: str = ""
+    sts: str = ""
+    suts: str = ""
+    srs: str = ""
+    sds: str = ""
+    hsis: str = ""
+
+
+class ScmRegistryEntry(BaseModel):
+    id: str
+    name: str
+    scm_type: str = "git"
+    scm_url: str = ""
+    scm_username: str = ""
+    scm_password_env: str = ""
+    branch: str = ""
+    base_ref: str = "HEAD~1"
+    source_root: str = ""
+    watch_patterns: List[str] = Field(default_factory=lambda: ["*.c", "*.h"])
+    ignore_patterns: List[str] = Field(default_factory=list)
+    webhook_secret_env: str = ""
+    linked_docs: ScmLinkedDocs = Field(default_factory=ScmLinkedDocs)
+    created_at: str = ""
+    updated_at: str = ""
+    last_triggered: str = ""
+    last_revision: str = ""
+
+
+class ScmRegistryStore(BaseModel):
+    registries: List[ScmRegistryEntry] = Field(default_factory=list)
+
+
+class ScmRegisterRequest(BaseModel):
+    id: str
+    name: str
+    scm_type: str = "git"
+    scm_url: str = ""
+    scm_username: str = ""
+    scm_password_env: str = ""
+    branch: str = ""
+    base_ref: str = "HEAD~1"
+    source_root: str = ""
+    watch_patterns: List[str] = Field(default_factory=lambda: ["*.c", "*.h"])
+    ignore_patterns: List[str] = Field(default_factory=list)
+    webhook_secret_env: str = ""
+    linked_docs: ScmLinkedDocs = Field(default_factory=ScmLinkedDocs)
+
+
+class ScmUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    scm_type: Optional[str] = None
+    scm_url: Optional[str] = None
+    scm_username: Optional[str] = None
+    scm_password_env: Optional[str] = None
+    branch: Optional[str] = None
+    base_ref: Optional[str] = None
+    source_root: Optional[str] = None
+    watch_patterns: Optional[List[str]] = None
+    ignore_patterns: Optional[List[str]] = None
+    webhook_secret_env: Optional[str] = None
+    linked_docs: Optional[ScmLinkedDocs] = None
+
+
 class JenkinsSyncLocalRequest(BaseModel):
     job_url: str
     local_reports_dir: str
@@ -281,6 +354,14 @@ class ScmRequest(BaseModel):
     revision: str = ""
     timeout_sec: int = 900
     mode: str = "git"
+
+
+class LocalImpactTriggerRequest(BaseModel):
+    scm_id: str
+    base_ref: str = ""
+    dry_run: bool = False
+    targets: List[str] = Field(default_factory=list)
+    manual_changed_files: List[str] = Field(default_factory=list)
 
 
 class KBRequest(BaseModel):

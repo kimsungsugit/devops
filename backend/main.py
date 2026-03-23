@@ -98,3 +98,5 @@ from backend.routers.local import router as _local_router  # noqa: E402
 app.include_router(_local_router)
 from backend.routers.sessions import router as _sessions_router  # noqa: E402
 app.include_router(_sessions_router)
+from backend.routers.scm import router as _scm_router  # noqa: E402
+app.include_router(_scm_router)

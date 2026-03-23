@@ -16,6 +16,52 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
+_FUNC_DECL_LINE = re.compile(
+    r"^[+-]\s*(?:static\s+)?"
+    r"(?:void|int|uint\d+_t|int\d+_t|U\d+|S\d+|bool|float|double|char|unsigned|signed|CONSTP2VAR|P2FUNC)"
+    r"[\w\s\*]*\s+(\w+)\s*\(",
+    re.MULTILINE,
+)
+_HUNK_FUNC = re.compile(r"^@@.*@@\s*(?:.*?\s)?(\w+)\s*\(", re.MULTILINE)
+_VAR_DECL_LINE = re.compile(
+    r"^[+-]\s*(?:static\s+)?(?:const\s+|volatile\s+|unsigned\s+|signed\s+)*"
+    r"(?:void|char|bool|float|double|int|long|short|u?int\d+(?:_t)?|U\d+|S\d+|[A-Za-z_]\w*_t)\b"
+    r"(?!.*\()"
+    r".*?\b([sg]_[A-Za-z0-9_]+|[A-Za-z0-9_]+)\b\s*(?:\[.*\])?\s*(?:=|;|,)",
+    re.MULTILINE,
+)
+
+
+def _run_unified_diff(
+    project_root: str,
+    *,
+    base_ref: str,
+    scm_type: str,
+    file_path: Optional[str] = None,
+) -> str:
+    root = Path(project_root)
+
+    if scm_type == "svn":
+        cmd = ["svn", "diff", "-r", base_ref, "--diff-cmd", "diff", "-x", "-U3"]
+        if file_path:
+            cmd.append(file_path)
+    else:
+        cmd = ["git", "diff", base_ref]
+        if file_path:
+            cmd.extend(["--", file_path])
+
+    result = subprocess.run(
+        cmd,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout
+
+
 def get_changed_files(
     project_root: str,
     *,
@@ -57,36 +103,79 @@ def get_changed_functions(
     changed_files: List[str],
     *,
     base_ref: str = "HEAD~1",
+    scm_type: str = "git",
 ) -> Set[str]:
     """Extract function names that were modified in the diff."""
-    root = Path(project_root)
-    func_pattern = re.compile(
-        r"^[+-]\s*(?:static\s+)?(?:void|int|uint\d+_t|U\d+|S\d+|bool|float|double|char|unsigned|signed)"
-        r"\s+(\w+)\s*\(",
-        re.MULTILINE,
-    )
-    hunk_pattern = re.compile(r"^@@.*@@\s*(?:.*\s)?(\w+)\s*\(", re.MULTILINE)
-
     changed_funcs: Set[str] = set()
 
     for fpath in changed_files:
         try:
-            result = subprocess.run(
-                ["git", "diff", base_ref, "--", fpath],
-                cwd=str(root), capture_output=True, text=True, timeout=30,
+            diff_text = _run_unified_diff(
+                project_root,
+                base_ref=base_ref,
+                scm_type=scm_type,
+                file_path=fpath,
             )
-            if result.returncode != 0:
-                continue
-
-            diff_text = result.stdout
-            for m in func_pattern.finditer(diff_text):
+            for m in _FUNC_DECL_LINE.finditer(diff_text):
                 changed_funcs.add(m.group(1))
-            for m in hunk_pattern.finditer(diff_text):
+            for m in _HUNK_FUNC.finditer(diff_text):
                 changed_funcs.add(m.group(1))
         except Exception as e:
             logger.warning("Failed to parse diff for %s: %s", fpath, e)
 
     return changed_funcs
+
+
+def classify_changed_functions(
+    project_root: str,
+    changed_files: List[str],
+    *,
+    scm_type: str = "git",
+    base_ref: str = "HEAD~1",
+) -> Dict[str, str]:
+    """Classify changed functions conservatively from unified diff text."""
+    classifications: Dict[str, str] = {}
+
+    for fpath in changed_files:
+        try:
+            diff_text = _run_unified_diff(
+                project_root,
+                base_ref=base_ref,
+                scm_type=scm_type,
+                file_path=fpath,
+            )
+            if not diff_text:
+                continue
+
+            hunk_funcs = {m.group(1) for m in _HUNK_FUNC.finditer(diff_text)}
+            added_decl = {m.group(1) for m in re.finditer(r"^\+\s*.*?\b(\w+)\s*\(", diff_text, re.MULTILINE)}
+            removed_decl = {m.group(1) for m in re.finditer(r"^-\s*.*?\b(\w+)\s*\(", diff_text, re.MULTILINE)}
+            func_decl_names = {m.group(1) for m in _FUNC_DECL_LINE.finditer(diff_text)}
+            var_changed = bool(_VAR_DECL_LINE.search(diff_text))
+            is_header = fpath.endswith(".h")
+
+            for func in sorted(hunk_funcs | func_decl_names):
+                current = classifications.get(func)
+                new_kind = "BODY"
+
+                if is_header:
+                    new_kind = "HEADER"
+                elif func in added_decl and func in removed_decl and func in func_decl_names:
+                    new_kind = "SIGNATURE"
+                elif func in added_decl and func in func_decl_names:
+                    new_kind = "NEW"
+                elif func in removed_decl and func in func_decl_names:
+                    new_kind = "DELETE"
+                elif var_changed:
+                    new_kind = "VARIABLE"
+
+                if current in {"NEW", "DELETE", "SIGNATURE", "HEADER"}:
+                    continue
+                classifications[func] = new_kind
+        except Exception as e:
+            logger.warning("Failed to classify diff for %s: %s", fpath, e)
+
+    return classifications
 
 
 def compute_impact_set(
@@ -163,7 +252,13 @@ def compute_delta_summary(
             "skip_ratio": 1.0,
         }
 
-    changed_funcs = get_changed_functions(project_root, changed_files, base_ref=base_ref)
+    changed_types = classify_changed_functions(
+        project_root,
+        changed_files,
+        base_ref=base_ref,
+        scm_type=scm_type,
+    )
+    changed_funcs = set(changed_types)
     impact = compute_impact_set(changed_funcs, call_map)
     filtered = filter_function_details(function_details, impact)
 
@@ -180,6 +275,7 @@ def compute_delta_summary(
     return {
         "changed_files": changed_files,
         "changed_functions": sorted(changed_funcs),
+        "changed_function_types": dict(sorted(changed_types.items())),
         "impact_set": sorted(impact),
         "filtered_count": len(filtered),
         "total_count": total,
