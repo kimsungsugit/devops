@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set
 
-from backend.services.scm_registry import get_registry_entry
+from backend.schemas import ScmLinkedDocs, ScmUpdateRequest
+from backend.services.scm_registry import get_registry_entry, update_entry
 from workflow.change_trigger import ChangeTrigger
 from workflow.delta_update import classify_changed_functions
 from workflow.impact_audit import acquire_run_lock, release_run_lock, write_impact_audit
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTO_DOCS = {"uds", "suts"}
 FLAG_DOCS = {"sts", "sds"}
 ACTION_MATRIX: Dict[str, Dict[str, str]] = {
@@ -27,6 +33,152 @@ class ImpactOptions:
     max_hop: int = 2
     same_module_only: bool = True
     max_impacted_functions: int = 50
+
+
+def _ts() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _resolve_existing(path_text: str) -> str | None:
+    path = Path(str(path_text or "").strip()).expanduser()
+    return str(path.resolve()) if path.exists() and path.is_file() else None
+
+
+def _discover_doc(name_token: str, suffixes: Set[str]) -> str | None:
+    docs_dir = REPO_ROOT / "docs"
+    if not docs_dir.exists():
+        return None
+    for path in docs_dir.iterdir():
+        if path.is_file() and path.suffix.lower() in suffixes and name_token.lower() in path.name.lower():
+            return str(path.resolve())
+    return None
+
+
+def _update_linked_doc(entry_id: str, field: str, path_text: str) -> None:
+    update_entry(entry_id, ScmUpdateRequest(linked_docs=ScmLinkedDocs(**{field: path_text})))
+
+
+def _write_review_artifact(
+    target: str,
+    trigger: ChangeTrigger,
+    changed_types: Dict[str, str],
+    impact_groups: Dict[str, List[str]],
+    linked_doc: str = "",
+) -> str:
+    review_dir = REPO_ROOT / "reports" / "impact_audit"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    out_path = review_dir / f"{target}_review_required_{_ts()}.md"
+    lines = [
+        f"# {target.upper()} Review Required",
+        "",
+        f"- SCM ID: `{trigger.scm_id}`",
+        f"- Trigger: `{trigger.trigger_type}`",
+        f"- Source root: `{trigger.source_root}`",
+        f"- Base ref: `{trigger.base_ref}`",
+        f"- Linked document: `{linked_doc or '-'}`",
+        "",
+        "## Changed Files",
+    ]
+    lines.extend([f"- `{item}`" for item in trigger.changed_files] or ["- none"])
+    lines.extend(["", "## Changed Functions"])
+    if changed_types:
+        for func, kind in sorted(changed_types.items()):
+            lines.append(f"- `{func}` : `{kind}`")
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Impact"])
+    lines.append(f"- direct: `{len(impact_groups.get('direct', []))}`")
+    lines.append(f"- indirect_1hop: `{len(impact_groups.get('indirect_1hop', []))}`")
+    lines.append(f"- indirect_2hop: `{len(impact_groups.get('indirect_2hop', []))}`")
+    lines.extend(["", "## Review Checklist"])
+    if target == "sts":
+        lines.extend(
+            [
+                "- Verify impacted requirements and TC coverage.",
+                "- Check whether changed function behavior invalidates existing expected results.",
+                "- Confirm new/deleted signatures require new or removed test cases.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- Verify module/interface description still matches header and source changes.",
+                "- Check affected components and interface contracts.",
+                "- Confirm architecture partition impact is documented if needed.",
+            ]
+        )
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(out_path)
+
+
+def _run_uds_generation(trigger: ChangeTrigger) -> Dict[str, Any]:
+    out_dir = REPO_ROOT / "backend" / "reports" / "uds_local"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    before = {p.resolve() for p in out_dir.glob("uds_spec_generated_expanded_*.docx")}
+    env = os.environ.copy()
+    env["UDS_CHANGED_FILES"] = ",".join(trigger.changed_files)
+    cmd = [sys.executable, str(REPO_ROOT / "tools" / "generate_uds_local.py")]
+    run = subprocess.run(
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=3600,
+        check=False,
+    )
+    if run.returncode != 0:
+        err = ((run.stderr or "") + "\n" + (run.stdout or "")).strip()[-4000:]
+        raise RuntimeError(f"UDS regeneration failed: {err}")
+    candidates = [p.resolve() for p in out_dir.glob("uds_spec_generated_expanded_*.docx")]
+    new_files = [p for p in candidates if p not in before]
+    chosen = max(new_files or candidates, key=lambda p: p.stat().st_mtime)
+    return {"output_path": str(chosen), "stdout_tail": (run.stdout or "")[-1000:]}
+
+
+def _run_suts_generation(entry: Any) -> Dict[str, Any]:
+    from suts_generator import generate_suts
+
+    source_root = str(entry.source_root or "").strip()
+    if not source_root:
+        raise RuntimeError("SUTS regeneration requires source_root")
+    out_dir = REPO_ROOT / "reports" / "suts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"suts_impact_{_ts()}.xlsm"
+    template_path = _resolve_existing(entry.linked_docs.suts) or _discover_doc("suts", {".xlsm", ".xlsx"})
+    srs_path = _resolve_existing(entry.linked_docs.srs) or _discover_doc("srs", {".docx"})
+    sds_path = _resolve_existing(entry.linked_docs.sds) or _discover_doc("sds", {".docx"})
+    uds_path = _resolve_existing(entry.linked_docs.uds)
+    hsis_path = _resolve_existing(entry.linked_docs.hsis) or _discover_doc("hsis", {".xlsx", ".xlsm"})
+
+    result = generate_suts(
+        source_root=source_root,
+        output_path=str(out_path),
+        template_path=template_path,
+        project_config={
+            "project_id": str(entry.id or "PROJECT").upper(),
+            "doc_id": f"{str(entry.id or 'PROJECT').upper()}-SUTS",
+            "version": "impact",
+            "asil_level": "",
+        },
+        srs_docx_path=srs_path,
+        sds_docx_path=sds_path,
+        uds_path=uds_path,
+        hsis_path=hsis_path,
+    )
+    return {
+        "output_path": str(out_path),
+        "test_case_count": result.get("test_case_count", 0),
+        "validation_report_path": result.get("validation_report_path", ""),
+    }
+
+
+def _execute_auto_action(target: str, trigger: ChangeTrigger, entry: Any) -> Dict[str, Any]:
+    if target == "uds":
+        return _run_uds_generation(trigger)
+    if target == "suts":
+        return _run_suts_generation(entry)
+    raise RuntimeError(f"unsupported AUTO target: {target}")
 
 
 def _module_name(info: Dict[str, Any]) -> str:
@@ -223,6 +375,30 @@ def run_impact_update(
             "warnings": warnings,
             "actions": actions,
         }
+        if not trigger.dry_run:
+            linked_docs = entry.linked_docs if entry else ScmLinkedDocs()
+            for target, info in actions.items():
+                if info.get("mode") == "AUTO":
+                    try:
+                        exec_result = _execute_auto_action(target, trigger, entry)
+                        info["status"] = "completed"
+                        info["output_path"] = exec_result.get("output_path", "")
+                        info["result"] = exec_result
+                        if info["output_path"] and entry:
+                            _update_linked_doc(entry.id, target, info["output_path"])
+                    except Exception as exc:
+                        info["status"] = "failed"
+                        info["error"] = str(exc)
+                        result["ok"] = False
+                elif info.get("mode") == "FLAG":
+                    artifact_path = _write_review_artifact(
+                        target,
+                        trigger,
+                        changed_types,
+                        impact_groups,
+                        getattr(linked_docs, target, ""),
+                    )
+                    info["artifact_path"] = artifact_path
         write_impact_audit(
             {
                 "scm_id": trigger.scm_id,

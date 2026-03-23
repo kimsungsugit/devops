@@ -128,3 +128,75 @@ def test_run_impact_update_promotes_auto_to_flag_when_limit_exceeded(tmp_path, m
     assert result["warnings"]
     assert result["actions"]["uds"]["mode"] == "FLAG"
     assert result["actions"]["suts"]["mode"] == "FLAG"
+
+
+def test_run_impact_update_executes_auto_and_flag_actions(tmp_path, monkeypatch):
+    from backend.schemas import ScmRegisterRequest
+    from backend.services import scm_registry
+    from workflow import impact_audit, impact_orchestrator
+
+    reg_path = tmp_path / "config" / "scm_registry.json"
+    audit_dir = tmp_path / "audit"
+    monkeypatch.setattr(scm_registry, "REGISTRY_PATH", reg_path)
+    monkeypatch.setattr(impact_audit, "AUDIT_DIR", audit_dir)
+    monkeypatch.setattr(impact_audit, "LOCK_PATH", audit_dir / ".run_lock")
+    scm_registry.register_entry(
+        ScmRegisterRequest(
+            id="hdpdm01",
+            name="HDPDM01",
+            scm_type="git",
+            source_root=str(tmp_path / "src"),
+        )
+    )
+
+    monkeypatch.setattr(
+        impact_orchestrator,
+        "classify_changed_functions",
+        lambda *args, **kwargs: {"door_run": "BODY", "door_header": "HEADER"},
+    )
+
+    class _FakeRg:
+        @staticmethod
+        def generate_uds_source_sections(_source_root):
+            return {
+                "call_map": {"door_run": ["door_helper"]},
+                "function_details_by_name": {
+                    "door_run": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
+                    "door_header": {"module_name": "door", "file": "Sources/APP/Ap_Door.h"},
+                    "door_helper": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
+                },
+            }
+
+    monkeypatch.setitem(__import__("sys").modules, "report_generator", _FakeRg)
+    monkeypatch.setattr(
+        impact_orchestrator,
+        "_execute_auto_action",
+        lambda target, trigger, entry: {"output_path": str(tmp_path / f"{target}.out")},
+    )
+    monkeypatch.setattr(
+        impact_orchestrator,
+        "_write_review_artifact",
+        lambda target, trigger, changed_types, impact_groups, linked_doc="": str(tmp_path / f"{target}_review.md"),
+    )
+
+    result = impact_orchestrator.run_impact_update(
+        ChangeTrigger(
+            trigger_type="local",
+            scm_id="hdpdm01",
+            source_root=str(tmp_path / "src"),
+            scm_type="git",
+            base_ref="HEAD~1",
+            changed_files=["Ap_Door.c", "Ap_Door.h"],
+            dry_run=False,
+            targets=["uds", "sts"],
+            metadata={},
+        )
+    )
+
+    updated = scm_registry.get_registry_entry("hdpdm01")
+    assert result["ok"] is True
+    assert result["actions"]["uds"]["status"] == "completed"
+    assert result["actions"]["uds"]["output_path"].endswith("uds.out")
+    assert result["actions"]["sts"]["artifact_path"].endswith("sts_review.md")
+    assert updated is not None
+    assert updated.linked_docs.uds.endswith("uds.out")
