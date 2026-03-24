@@ -3896,8 +3896,8 @@ function App() {
   }, [findings]);
 
   const detailTabs = [
-    { key: "status", label: "?곹깭", data: status },
-    { key: "static", label: "?뺤쟻 遺꾩꽍", data: summary?.static },
+    { key: "status", label: "상태", data: status },
+    { key: "static", label: "정적 분석", data: summary?.static },
     { key: "preflight", label: "Preflight", data: summary?.preflight },
     {
       key: "change-impact",
@@ -3919,7 +3919,7 @@ function App() {
       label: "Tests & Coverage",
       data: { tests: summary?.tests, coverage: summary?.coverage },
     },
-    { key: "metrics", label: "硫뷀듃由??곸꽭", data: { summary, status } },
+    { key: "metrics", label: "메트릭 상세", data: { summary, status } },
     {
       key: "local-report",
       label: "로컬 리포트",
@@ -4524,11 +4524,26 @@ function App() {
                 jenkinsCacheRoot={jenkinsCacheRoot}
                 setJenkinsCacheRoot={setJenkinsCacheRoot}
                 jenkinsBuildSelector={jenkinsBuildSelector}
+                setJenkinsBuildSelector={setJenkinsBuildSelector}
                 sourceRoot={analyzerSourceRoot}
                 setSourceRoot={setAnalyzerSourceRoot}
                 pickDirectory={pickDirectory}
                 pickFile={pickFile}
                 preferredArtifactType={typeof window !== "undefined" ? window.localStorage.getItem("analyzer_preferred_artifact") || "" : ""}
+                scmMode={scmMode}
+                setScmMode={setScmMode}
+                scmWorkdir={scmWorkdir}
+                setScmWorkdir={setScmWorkdir}
+                scmRepoUrl={scmRepoUrl}
+                setScmRepoUrl={setScmRepoUrl}
+                scmBranch={scmBranch}
+                setScmBranch={setScmBranch}
+                scmDepth={scmDepth}
+                setScmDepth={setScmDepth}
+                scmRevision={scmRevision}
+                setScmRevision={setScmRevision}
+                runScm={runScm}
+                scmOutput={scmOutput}
               />
             )}
             {mode === "local" && primaryView === "dashboard" && (

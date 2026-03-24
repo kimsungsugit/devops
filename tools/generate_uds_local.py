@@ -382,9 +382,43 @@ def _find_resume_candidate(out_dir: Path, retry_stages: list[tuple[str, int, int
     return None
 
 
+def _resolve_source_root(repo_root: Path) -> Path:
+    override = os.getenv("UDS_SOURCE_ROOT", "").strip()
+    candidates = [
+        Path(override) if override else None,
+        Path(r"D:\Project\Ados\PDS64_RD"),
+        Path(r"D:\Project\Ados\PDS_64_RD"),
+    ]
+    for candidate in candidates:
+        if candidate and candidate.exists() and candidate.is_dir():
+            return candidate
+    return Path(override) if override else Path(r"D:\Project\Ados\PDS64_RD")
+
+
+def _write_uds_payload_sidecar(output_path: Path, uds_payload: dict) -> Path | None:
+    try:
+        details = uds_payload.get("function_details")
+        if not isinstance(details, dict) or not details:
+            return None
+        summary = uds_payload.get("summary")
+        if not isinstance(summary, dict):
+            summary = {}
+        sidecar = output_path.with_suffix(".payload.json")
+        payload = {
+            "docx_path": str(output_path),
+            "summary": summary,
+            "function_details": details,
+        }
+        sidecar.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return sidecar
+    except Exception:
+        return None
+
+
 def main() -> None:
     repo_root = Path(r"D:\Project\devops\260105")
     use_ai = os.getenv("UDS_USE_AI", "1").strip() not in {"0", "false", "False"}
+    impact_mode = os.getenv("UDS_IMPACT_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
     expand = True
     template_path = Path(
         r"D:\Project\devops\260105\docs\(HDPDM01_SUDS) Software Unit Design Specification_v1.07_240213.docx"
@@ -413,7 +447,7 @@ def main() -> None:
         Path(r"D:\Project\devops\260105\docs\(HDPDM01_SDS) Software Architecture Design Specification_v1.04_20230512.docx"),
         Path(r"D:\Project\devops\260105\docs\PDSM_Funtional_Specification_1.42_TC_220421_2.xlsx"),
     ]
-    source_root = Path(r"D:\Project\Ados\PDS_64_RD")
+    source_root = _resolve_source_root(repo_root)
     skip_source = os.getenv("UDS_SKIP_SOURCE", "0").strip() in {"1", "true", "True"}
 
     req_texts = []
@@ -697,6 +731,7 @@ def main() -> None:
         time.sleep(1.0)
     if not output_path.exists() or output_path.stat().st_size <= 0:
         raise RuntimeError(f"DOCX generation failed after retries: {last_err}")
+    sidecar_path = _write_uds_payload_sidecar(output_path, uds_payload)
     validation_path = output_path.with_suffix(".validation.md")
     ok_validation = _run_report_with_timeout(
         lambda: rg.generate_uds_validation_report(str(output_path), str(validation_path)),
@@ -708,33 +743,36 @@ def main() -> None:
         logger.info("validation report created: %s", validation_path)
     else:
         validation_path = None
-    accuracy_path = output_path.with_suffix(".accuracy.md")
-    ok_accuracy = _run_report_with_timeout(
-        lambda: rg.generate_called_calling_accuracy_report(
-            str(output_path),
-            str(source_root) if source_root.exists() else "",
-            str(accuracy_path),
-            relation_mode=str(uds_payload.get("call_relation_mode") or "code"),
-        ),
-        timeout_seconds=300,
-        logger=logger,
-        name="accuracy report",
-    )
-    if ok_accuracy:
-        logger.info("accuracy report created: %s", accuracy_path)
-    else:
-        accuracy_path = None
-    swcom_context_path = output_path.with_suffix(".swcom_context.md")
-    ok_swcom = _run_report_with_timeout(
-        lambda: rg.generate_swcom_context_report(str(output_path), str(swcom_context_path)),
-        timeout_seconds=120,
-        logger=logger,
-        name="swcom context report",
-    )
-    if ok_swcom:
-        logger.info("swcom context report created: %s", swcom_context_path)
-    else:
-        swcom_context_path = None
+    accuracy_path = None
+    swcom_context_path = None
+    if not impact_mode:
+        accuracy_path = output_path.with_suffix(".accuracy.md")
+        ok_accuracy = _run_report_with_timeout(
+            lambda: rg.generate_called_calling_accuracy_report(
+                str(output_path),
+                str(source_root) if source_root.exists() else "",
+                str(accuracy_path),
+                relation_mode=str(uds_payload.get("call_relation_mode") or "code"),
+            ),
+            timeout_seconds=300,
+            logger=logger,
+            name="accuracy report",
+        )
+        if ok_accuracy:
+            logger.info("accuracy report created: %s", accuracy_path)
+        else:
+            accuracy_path = None
+        swcom_context_path = output_path.with_suffix(".swcom_context.md")
+        ok_swcom = _run_report_with_timeout(
+            lambda: rg.generate_swcom_context_report(str(output_path), str(swcom_context_path)),
+            timeout_seconds=120,
+            logger=logger,
+            name="swcom context report",
+        )
+        if ok_swcom:
+            logger.info("swcom context report created: %s", swcom_context_path)
+        else:
+            swcom_context_path = None
     confidence_path = output_path.with_suffix(".field_confidence.md")
     ok_confidence = _run_report_with_timeout(
         lambda: rg.generate_asil_related_confidence_report(
@@ -772,28 +810,32 @@ def main() -> None:
         logger.info("field quality gate report created: %s", quality_gate_path)
     else:
         quality_gate_path = None
-    swcom_diff_path = output_path.with_suffix(".swcom_diff.md")
-    ref_docx = repo_root / "docs" / "(HDPDM01_SUDS) Software Unit Design Specification_v1.07_240213.docx"
-    if ref_docx.exists():
-        ok_swcom_diff = _run_report_with_timeout(
-            lambda: rg.generate_swcom_context_diff_report(str(ref_docx), str(output_path), str(swcom_diff_path)),
-            timeout_seconds=120,
-            logger=logger,
-            name="swcom context diff report",
-        )
-        if ok_swcom_diff:
-            logger.info("swcom context diff report created: %s", swcom_diff_path)
+    swcom_diff_path = None
+    if not impact_mode:
+        swcom_diff_path = output_path.with_suffix(".swcom_diff.md")
+        ref_docx = repo_root / "docs" / "(HDPDM01_SUDS) Software Unit Design Specification_v1.07_240213.docx"
+        if ref_docx.exists():
+            ok_swcom_diff = _run_report_with_timeout(
+                lambda: rg.generate_swcom_context_diff_report(str(ref_docx), str(output_path), str(swcom_diff_path)),
+                timeout_seconds=120,
+                logger=logger,
+                name="swcom context diff report",
+            )
+            if ok_swcom_diff:
+                logger.info("swcom context diff report created: %s", swcom_diff_path)
+            else:
+                swcom_diff_path = None
         else:
             swcom_diff_path = None
-    else:
-        swcom_diff_path = None
-    try:
-        html = rg.generate_uds_preview_html(uds_payload)
-        output_path.with_suffix(".html").write_text(html, encoding="utf-8")
-    except Exception:
-        pass
+        try:
+            html = rg.generate_uds_preview_html(uds_payload)
+            output_path.with_suffix(".html").write_text(html, encoding="utf-8")
+        except Exception:
+            pass
 
     print(f"UDS_DOCX={output_path}")
+    if sidecar_path:
+        print(f"UDS_PAYLOAD={sidecar_path}")
     if validation_path:
         print(f"UDS_VALIDATION={validation_path}")
     if accuracy_path:

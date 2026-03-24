@@ -81,6 +81,7 @@ except ImportError:
     generate_uds_ai_sections = None
 from workflow.change_trigger import build_registry_trigger
 from workflow.impact_orchestrator import run_impact_update
+from workflow.impact_jobs import start_impact_job
 
 repo_root = Path(__file__).resolve().parents[2]
 
@@ -936,6 +937,26 @@ def jenkins_impact_trigger(req: JenkinsImpactTriggerRequest) -> Dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail="registry entry not found")
     return run_impact_update(trigger)
+
+
+@router.post("/api/jenkins/impact/trigger-async")
+def jenkins_impact_trigger_async(req: JenkinsImpactTriggerRequest) -> Dict[str, Any]:
+    try:
+        trigger = build_registry_trigger(
+            trigger_type="jenkins",
+            scm_id=req.scm_id,
+            base_ref=req.base_ref,
+            dry_run=req.dry_run,
+            targets=req.targets or None,
+            metadata={
+                "source": "api/jenkins/impact/trigger-async",
+                "build_number": req.build_number,
+                "job_url": req.job_url,
+            },
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="registry entry not found")
+    return start_impact_job(trigger)
 
 
 @router.post("/api/jenkins/uds/template-upload")

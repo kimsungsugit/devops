@@ -150,6 +150,11 @@ _STD_LIB_FUNCS = frozenset({
     "assert", "exit", "abort",
 })
 
+_REGEX_DEF_PAT = re.compile(
+    r"^[\t ]*((?:static\s+)?[A-Za-z_][\w\s\*\(\),]*?)\s+([A-Za-z_]\w*)\s*\(([^;]*?)\)\s*\{",
+    flags=re.M,
+)
+
 
 def _extract_calls(func_node, src: bytes) -> List[str]:
     calls: Set[str] = set()
@@ -190,6 +195,18 @@ def _extract_calls(func_node, src: bytes) -> List[str]:
                         if rname and not rname.isupper():
                             calls.add(rname)
     return sorted(calls - _STD_LIB_FUNCS)
+
+
+def _extract_calls_from_body_text(body_text: str) -> List[str]:
+    calls: Set[str] = set()
+    for m in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", str(body_text or "")):
+        name = str(m.group(1) or "").strip()
+        if not name or name.lower() in {"if", "for", "while", "switch", "return", "sizeof"}:
+            continue
+        if name in _STD_LIB_FUNCS:
+            continue
+        calls.add(name)
+    return sorted(calls)
 
 
 def _extract_leading_comment(src: bytes, start_byte: int) -> str:
@@ -392,6 +409,65 @@ def _extract_function_defs(
     return functions
 
 
+def _extract_function_defs_regex_fallback(
+    text: str,
+    file_path: str,
+    globals_set: Set[str],
+) -> List[CFunction]:
+    if not text:
+        return []
+    functions: List[CFunction] = []
+    keywords = {"if", "for", "while", "switch", "return", "sizeof"}
+    text_bytes = text.encode("utf-8", errors="ignore")
+    for match in _REGEX_DEF_PAT.finditer(text):
+        prefix = str(match.group(1) or "").strip()
+        name = str(match.group(2) or "").strip()
+        params = " ".join(str(match.group(3) or "").replace("\n", " ").split())
+        if not name or name in keywords:
+            continue
+        brace_start = match.end() - 1
+        depth = 0
+        brace_end = brace_start
+        for idx in range(brace_start, len(text)):
+            ch = text[idx]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    brace_end = idx
+                    break
+        body_text = text[brace_start + 1 : brace_end].strip() if brace_end > brace_start else ""
+        used_globals: Set[str] = set()
+        for ident in re.findall(r"\b([A-Za-z_]\w*)\b", body_text):
+            if ident in globals_set and ident != name:
+                used_globals.add(ident)
+        try:
+            start_byte = len(text[: match.start()].encode("utf-8", errors="ignore"))
+        except Exception:
+            start_byte = 0
+        comment = _extract_leading_comment(text_bytes, start_byte)
+        desc, asil, related, precondition, _, c_params, c_return = _parse_comment_fields(comment)
+        functions.append(
+            CFunction(
+                name=name,
+                signature=f"{prefix} {name}({params})".strip(),
+                is_static="static" in prefix.lower().split(),
+                file=file_path,
+                calls=_extract_calls_from_body_text(body_text),
+                used_globals=sorted(used_globals),
+                comment_desc=desc,
+                comment_asil=asil,
+                comment_related=related,
+                comment_precondition=precondition,
+                body_text=body_text,
+                comment_params=c_params or None,
+                comment_return=c_return,
+            )
+        )
+    return functions
+
+
 def _extract_globals(root, src: bytes) -> List[str]:
     globals_list: List[str] = []
     for node in root.children:
@@ -484,26 +560,26 @@ def parse_c_project(
     defines: Optional[List[str]] = None,
     cpp_path: str = "gcc",
 ) -> Dict[str, List[Dict[str, any]]]:
-    if Parser is None or c_language is None:
-        return {"functions": [], "globals": [], "scanned": []}
     root = Path(source_root).resolve()
     if not root.exists():
         return {"functions": [], "globals": [], "scanned": []}
-    parser = Parser()
-    lang = c_language()
-    try:
-        parser.set_language(lang)
-    except Exception:
-        if Language is not None:
-            parser.language = Language(lang)
-        else:
-            raise
     allowed = {".c", ".h", ".cpp", ".hpp"}
     functions: List[Dict[str, any]] = []
     globals_list: Set[str] = set()
     globals_detailed: List[Dict[str, str]] = []
     scanned: List[str] = []
     preprocess_stats: Dict[str, int] = {"gcc": 0, "clang": 0, "no-preprocess": 0}
+    parser = None
+    if Parser is not None and c_language is not None:
+        parser = Parser()
+        lang = c_language()
+        try:
+            parser.set_language(lang)
+        except Exception:
+            if Language is not None:
+                parser.language = Language(lang)
+            else:
+                raise
     count = 0
     for dirpath, _, filenames in os.walk(root):
         for name in filenames:
@@ -531,10 +607,20 @@ def parse_c_project(
                 preprocess_stats[preprocessor_used] = preprocess_stats.get(preprocessor_used, 0) + 1
             except Exception:
                 continue
-            tree = parser.parse(data)
-            root_node = tree.root_node
-            file_globals = set(_extract_globals(root_node, data))
-            funcs = _extract_function_defs(root_node, data, str(path), file_globals)
+            raw_text = ""
+            try:
+                raw_text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                raw_text = ""
+            file_globals: Set[str] = set()
+            funcs: List[CFunction] = []
+            if parser is not None:
+                tree = parser.parse(data)
+                root_node = tree.root_node
+                file_globals = set(_extract_globals(root_node, data))
+                funcs = _extract_function_defs(root_node, data, str(path), file_globals)
+            if not funcs:
+                funcs = _extract_function_defs_regex_fallback(raw_text, str(path), file_globals)
             for f in funcs:
                 functions.append(
                     {
@@ -551,20 +637,23 @@ def parse_c_project(
                         "body": f.body_text,
                     }
                 )
-            for g in _extract_globals(root_node, data):
-                if not g:
-                    continue
-                globals_list.add(g)
-                globals_detailed.append({"name": g, "file": str(path)})
-            for g in _extract_global_decls(root_node, data):
-                if not isinstance(g, dict):
-                    continue
-                name = g.get("name") or ""
-                if not name:
-                    continue
-                globals_list.add(name)
-                g["file"] = str(path)
-                globals_detailed.append(g)
+            if parser is not None:
+                tree = parser.parse(data)
+                root_node = tree.root_node
+                for g in _extract_globals(root_node, data):
+                    if not g:
+                        continue
+                    globals_list.add(g)
+                    globals_detailed.append({"name": g, "file": str(path)})
+                for g in _extract_global_decls(root_node, data):
+                    if not isinstance(g, dict):
+                        continue
+                    name = g.get("name") or ""
+                    if not name:
+                        continue
+                    globals_list.add(name)
+                    g["file"] = str(path)
+                    globals_detailed.append(g)
         if count > max_files:
             break
     return {

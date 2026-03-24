@@ -82,6 +82,7 @@ from backend.services.local_service import (
 )
 from workflow.change_trigger import build_registry_trigger
 from workflow.impact_orchestrator import run_impact_update
+from workflow.impact_jobs import start_impact_job
 from backend.services.local_report_generator import generate_local_docx, generate_local_xlsx
 from backend.services.files import read_text_limited
 from backend.services.paths import is_under_any
@@ -2736,6 +2737,23 @@ def local_impact_trigger(req: LocalImpactTriggerRequest) -> Dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail="registry entry not found")
     return run_impact_update(trigger)
+
+
+@router.post("/api/local/impact/trigger-async")
+def local_impact_trigger_async(req: LocalImpactTriggerRequest) -> Dict[str, Any]:
+    try:
+        trigger = build_registry_trigger(
+            trigger_type="local",
+            scm_id=req.scm_id,
+            base_ref=req.base_ref,
+            dry_run=req.dry_run,
+            targets=req.targets or None,
+            manual_changed_files=req.manual_changed_files or None,
+            metadata={"source": "api/local/impact/trigger-async"},
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="registry entry not found")
+    return start_impact_job(trigger)
 
 
 @router.post("/api/local/kb/list")

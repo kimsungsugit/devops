@@ -13,7 +13,7 @@ from report.c_parsing import (
     _extract_c_macro_defs,
     _extract_c_global_candidates,
 )
-from workflow.code_parser.c_parser import _parse_comment_fields
+from workflow.code_parser.c_parser import _parse_comment_fields, _extract_function_defs_regex_fallback
 
 
 class TestStripCComments:
@@ -160,3 +160,25 @@ class TestCommentFieldParsing:
         _, asil, related, _, _, _, _ = _parse_comment_fields(comment)
         assert asil == "ASIL-B"
         assert related == "SwTSR_0101"
+
+
+class TestCodeParserRegexFallback:
+    def test_extracts_signature_and_comments_from_c_definition(self):
+        src = """
+        /**
+         * @brief Buzzer control main function
+         * @param state current state
+         * @return updated state
+         */
+        void g_Ap_BuzzerCtrl_Func(void)
+        {
+            helper_call();
+        }
+        """
+        result = _extract_function_defs_regex_fallback(src, "Ap_BuzzerCtrl_PDS.c", set())
+        assert len(result) == 1
+        fn = result[0]
+        assert fn.name == "g_Ap_BuzzerCtrl_Func"
+        assert fn.signature == "void g_Ap_BuzzerCtrl_Func(void)"
+        assert "helper_call" in fn.calls
+        assert "Buzzer control main function" in (fn.comment_desc or "")

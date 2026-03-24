@@ -17,6 +17,9 @@ from backend.services.scm_registry import (
     update_entry,
 )
 from backend.services.local_service import svn_info_url
+from workflow.impact_audit import list_impact_audits
+from workflow.impact_changes import list_change_logs, list_function_history, load_change_log
+from workflow.impact_jobs import list_jobs, load_job
 
 
 router = APIRouter()
@@ -139,3 +142,75 @@ def scm_link_docs(entry_id: str, linked_docs: ScmLinkedDocs) -> Dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail="registry entry not found")
     return {"ok": True, "item": entry.model_dump(mode="json")}
+
+
+@router.get("/api/scm/audit/{entry_id}")
+def scm_audit(entry_id: str, limit: int = 10) -> Dict[str, Any]:
+    entry = get_registry_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="registry entry not found")
+    items = list_impact_audits(entry_id, limit=limit)
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+@router.get("/api/scm/impact-job/{job_id}")
+def scm_impact_job(job_id: str) -> Dict[str, Any]:
+    try:
+        job = load_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="impact job not found")
+    return {"ok": True, "job": job}
+
+
+@router.get("/api/scm/impact-job/{job_id}/result")
+def scm_impact_job_result(job_id: str) -> Dict[str, Any]:
+    try:
+        job = load_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="impact job not found")
+    status = str(job.get("status") or "")
+    if status == "completed":
+        return {"ok": True, "job": job, "result": job.get("result") or {}}
+    if status == "failed":
+        return {
+            "ok": False,
+            "job": job,
+            "error": job.get("error") or {},
+        }
+    raise HTTPException(status_code=409, detail="impact job still running")
+
+
+@router.get("/api/scm/impact-jobs/{entry_id}")
+def scm_impact_jobs(entry_id: str, limit: int = 10) -> Dict[str, Any]:
+    entry = get_registry_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="registry entry not found")
+    items = list_jobs(scm_id=entry_id, limit=limit)
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+@router.get("/api/scm/change-history/{entry_id}")
+def scm_change_history(entry_id: str, limit: int = 20) -> Dict[str, Any]:
+    entry = get_registry_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="registry entry not found")
+    items = list_change_logs(entry_id, limit=limit)
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+@router.get("/api/scm/change-history/detail/{run_id}")
+def scm_change_history_detail(run_id: str) -> Dict[str, Any]:
+    try:
+        item = load_change_log(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="change log not found")
+    return {"ok": True, "item": item}
+
+
+@router.get("/api/scm/change-history/function/{entry_id}/{function_name}")
+def scm_change_history_function(entry_id: str, function_name: str, limit: int = 20) -> Dict[str, Any]:
+    entry = get_registry_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="registry entry not found")
+    items = list_function_history(entry_id, function_name, limit=limit)
+    return {"ok": True, "items": items, "count": len(items)}

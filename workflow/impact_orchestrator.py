@@ -15,6 +15,7 @@ from backend.services.scm_registry import get_registry_entry, update_entry
 from workflow.change_trigger import ChangeTrigger
 from workflow.delta_update import classify_changed_functions
 from workflow.impact_audit import acquire_run_lock, release_run_lock, write_impact_audit
+from workflow.impact_changes import build_change_log, write_change_log
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,17 @@ ACTION_MATRIX: Dict[str, Dict[str, str]] = {
     "VARIABLE": {"uds": "AUTO", "suts": "AUTO", "sts": "FLAG", "sds": "-"},
     "HEADER": {"uds": "AUTO", "suts": "FLAG", "sts": "FLAG", "sds": "FLAG"},
 }
+
+
+def _load_source_sections(source_root: str) -> Dict[str, Any]:
+    try:
+        from backend.helpers import _get_source_sections_cached
+
+        return _get_source_sections_cached(source_root)
+    except Exception:
+        import report_generator as rg
+
+        return rg.generate_uds_source_sections(source_root)
 
 
 @dataclass
@@ -198,6 +210,8 @@ def _run_uds_generation(trigger: ChangeTrigger) -> Dict[str, Any]:
     before = {p.resolve() for p in out_dir.glob("uds_spec_generated_expanded_*.docx")}
     env = os.environ.copy()
     env["UDS_CHANGED_FILES"] = ",".join(trigger.changed_files)
+    env["UDS_IMPACT_MODE"] = "1"
+    env["UDS_SOURCE_ROOT"] = str(trigger.source_root or "")
     cmd = [sys.executable, str(REPO_ROOT / "tools" / "generate_uds_local.py")]
     run = subprocess.run(
         cmd,
@@ -217,7 +231,7 @@ def _run_uds_generation(trigger: ChangeTrigger) -> Dict[str, Any]:
     return {"output_path": str(chosen), "stdout_tail": (run.stdout or "")[-1000:]}
 
 
-def _run_suts_generation(entry: Any) -> Dict[str, Any]:
+def _run_suts_generation(entry: Any, target_functions: List[str] | None = None) -> Dict[str, Any]:
     from suts_generator import generate_suts
 
     source_root = str(entry.source_root or "").strip()
@@ -246,6 +260,7 @@ def _run_suts_generation(entry: Any) -> Dict[str, Any]:
         sds_docx_path=sds_path,
         uds_path=uds_path,
         hsis_path=hsis_path,
+        target_function_names=list(target_functions or []),
     )
     return {
         "output_path": str(out_path),
@@ -254,11 +269,11 @@ def _run_suts_generation(entry: Any) -> Dict[str, Any]:
     }
 
 
-def _execute_auto_action(target: str, trigger: ChangeTrigger, entry: Any) -> Dict[str, Any]:
+def _execute_auto_action(target: str, trigger: ChangeTrigger, entry: Any, target_functions: List[str] | None = None) -> Dict[str, Any]:
     if target == "uds":
         return _run_uds_generation(trigger)
     if target == "suts":
-        return _run_suts_generation(entry)
+        return _run_suts_generation(entry, target_functions)
     raise RuntimeError(f"unsupported AUTO target: {target}")
 
 
@@ -432,15 +447,21 @@ def run_impact_update(
     trigger: ChangeTrigger,
     *,
     options: ImpactOptions | None = None,
+    on_progress: Any | None = None,
 ) -> Dict[str, Any]:
     options = options or ImpactOptions()
     targets = _selected_targets(trigger.targets)
+    if callable(on_progress):
+        on_progress("prepare", "실행 준비 중입니다.", {"changed_files": len(trigger.changed_files or [])})
     lock = acquire_run_lock(trigger.scm_id)
     if not lock.get("ok"):
         return {"ok": False, "reason": lock.get("reason"), "lock": lock}
 
     try:
         entry = get_registry_entry(trigger.scm_id)
+        previous_linked_docs = entry.linked_docs.model_dump(mode="json") if entry else {}
+        if callable(on_progress):
+            on_progress("classify", "변경 함수를 분류 중입니다.", {"changed_files": len(trigger.changed_files or [])})
         changed_types = classify_changed_functions(
             trigger.source_root,
             trigger.changed_files,
@@ -451,9 +472,9 @@ def run_impact_update(
             changed_types = _fallback_changed_types_from_files(trigger.changed_files)
 
         if entry and entry.source_root:
-            import report_generator as rg
-
-            sections = rg.generate_uds_source_sections(entry.source_root)
+            if callable(on_progress):
+                on_progress("impact_analysis", "영향 범위를 계산 중입니다.", {"changed_functions": len(changed_types)})
+            sections = _load_source_sections(entry.source_root)
             by_name_raw = sections.get("function_details_by_name", {}) or {}
             by_name = {str(k).strip().lower(): v for k, v in by_name_raw.items() if isinstance(v, dict)}
             changed_types = _resolve_changed_types_to_functions(changed_types, trigger.changed_files, by_name)
@@ -496,10 +517,34 @@ def run_impact_update(
         }
         if not trigger.dry_run:
             linked_docs = entry.linked_docs if entry else ScmLinkedDocs()
-            for target, info in actions.items():
+            if callable(on_progress):
+                on_progress(
+                    "execute_actions",
+                    "문서 액션을 실행 중입니다.",
+                    {"impacted_functions": impacted_total, "targets": len(actions)},
+                )
+            action_items = list(actions.items())
+            total_actions = len(action_items)
+            for idx, (target, info) in enumerate(action_items, start=1):
                 if info.get("mode") == "AUTO":
+                    if callable(on_progress):
+                        on_progress(
+                            "execute_actions",
+                            f"{target.upper()} 자동 갱신을 실행 중입니다. ({idx}/{total_actions})",
+                            {
+                                "impacted_functions": impacted_total,
+                                "targets": total_actions,
+                                "current_target": target,
+                                "current_index": idx,
+                            },
+                        )
                     try:
-                        exec_result = _execute_auto_action(target, trigger, entry)
+                        exec_result = _execute_auto_action(
+                            target,
+                            trigger,
+                            entry,
+                            info.get("functions") or [],
+                        )
                         info["status"] = "completed"
                         info["output_path"] = exec_result.get("output_path", "")
                         info["result"] = exec_result
@@ -510,6 +555,17 @@ def run_impact_update(
                         info["error"] = str(exc)
                         result["ok"] = False
                 elif info.get("mode") == "FLAG":
+                    if callable(on_progress):
+                        on_progress(
+                            "execute_actions",
+                            f"{target.upper()} 검토 아티팩트를 생성 중입니다. ({idx}/{total_actions})",
+                            {
+                                "impacted_functions": impacted_total,
+                                "targets": total_actions,
+                                "current_target": target,
+                                "current_index": idx,
+                            },
+                        )
                     artifact_path = _write_review_artifact(
                         target,
                         trigger,
@@ -519,19 +575,35 @@ def run_impact_update(
                         getattr(linked_docs, target, ""),
                     )
                     info["artifact_path"] = artifact_path
-        write_impact_audit(
-            {
-                "scm_id": trigger.scm_id,
-                "trigger": trigger.trigger_type,
-                "changed_files": trigger.changed_files,
-                "changed_functions": dict(sorted(changed_types.items())),
-                "impacted_functions": impact_groups,
-                "targets": targets,
-                "dry_run": bool(trigger.dry_run),
-                "warnings": warnings,
-                "actions": actions,
-            }
+        if callable(on_progress):
+            on_progress("write_audit", "실행 이력을 저장 중입니다.", {"targets": len(actions)})
+        audit_payload = {
+            "scm_id": trigger.scm_id,
+            "trigger": trigger.trigger_type,
+            "changed_files": trigger.changed_files,
+            "changed_functions": dict(sorted(changed_types.items())),
+            "impacted_functions": impact_groups,
+            "targets": targets,
+            "dry_run": bool(trigger.dry_run),
+            "warnings": warnings,
+            "actions": actions,
+        }
+        audit_path = write_impact_audit(audit_payload)
+        change_log = build_change_log(
+            run_id=audit_path.stem,
+            trigger=trigger.to_dict(),
+            result=result,
+            previous_linked_docs=previous_linked_docs,
         )
+        change_log_path = write_change_log(change_log)
+        result["audit_path"] = str(audit_path)
+        result["change_log"] = {
+            "path": str(change_log_path),
+            "run_id": str(change_log.get("run_id") or audit_path.stem),
+            "summary": change_log.get("summary") or {},
+        }
+        if callable(on_progress):
+            on_progress("done", "완료되었습니다.", {"targets": len(actions)})
         return result
     finally:
         release_run_lock()

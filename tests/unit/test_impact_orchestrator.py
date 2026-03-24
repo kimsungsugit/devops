@@ -30,20 +30,19 @@ def test_run_impact_update_dry_run_builds_auto_and_flag_actions(tmp_path, monkey
         lambda *args, **kwargs: {"door_run": "BODY", "door_init": "SIGNATURE"},
     )
 
-    class _FakeRg:
-        @staticmethod
-        def generate_uds_source_sections(_source_root):
-            return {
-                "call_map": {"door_run": ["door_helper"], "door_helper": ["door_leaf"]},
-                "function_details_by_name": {
-                    "door_run": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
-                    "door_init": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
-                    "door_helper": {"module_name": "door", "file": "Sources/APP/Ap_Door_Helper.c"},
-                    "door_leaf": {"module_name": "door", "file": "Sources/APP/Ap_Door_Leaf.c"},
-                },
-            }
-
-    monkeypatch.setitem(__import__("sys").modules, "report_generator", _FakeRg)
+    monkeypatch.setattr(
+        impact_orchestrator,
+        "_load_source_sections",
+        lambda _source_root: {
+            "call_map": {"door_run": ["door_helper"], "door_helper": ["door_leaf"]},
+            "function_details_by_name": {
+                "door_run": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
+                "door_init": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
+                "door_helper": {"module_name": "door", "file": "Sources/APP/Ap_Door_Helper.c"},
+                "door_leaf": {"module_name": "door", "file": "Sources/APP/Ap_Door_Leaf.c"},
+            },
+        },
+    )
 
     result = impact_orchestrator.run_impact_update(
         ChangeTrigger(
@@ -93,22 +92,21 @@ def test_run_impact_update_promotes_auto_to_flag_when_limit_exceeded(tmp_path, m
         lambda *args, **kwargs: {"seed": "BODY"},
     )
 
-    class _FakeRg:
-        @staticmethod
-        def generate_uds_source_sections(_source_root):
-            return {
-                "call_map": {
-                    "seed": ["f1", "f2"],
-                    "f1": ["f3"],
-                    "f2": ["f4"],
-                },
-                "function_details_by_name": {
-                    name: {"module_name": "door", "file": "Sources/APP/Ap_Door.c"}
-                    for name in ["seed", "f1", "f2", "f3", "f4"]
-                },
-            }
-
-    monkeypatch.setitem(__import__("sys").modules, "report_generator", _FakeRg)
+    monkeypatch.setattr(
+        impact_orchestrator,
+        "_load_source_sections",
+        lambda _source_root: {
+            "call_map": {
+                "seed": ["f1", "f2"],
+                "f1": ["f3"],
+                "f2": ["f4"],
+            },
+            "function_details_by_name": {
+                name: {"module_name": "door", "file": "Sources/APP/Ap_Door.c"}
+                for name in ["seed", "f1", "f2", "f3", "f4"]
+            },
+        },
+    )
 
     result = impact_orchestrator.run_impact_update(
         ChangeTrigger(
@@ -134,13 +132,15 @@ def test_run_impact_update_promotes_auto_to_flag_when_limit_exceeded(tmp_path, m
 def test_run_impact_update_executes_auto_and_flag_actions(tmp_path, monkeypatch):
     from backend.schemas import ScmRegisterRequest
     from backend.services import scm_registry
-    from workflow import impact_audit, impact_orchestrator
+    from workflow import impact_audit, impact_changes, impact_orchestrator
 
     reg_path = tmp_path / "config" / "scm_registry.json"
     audit_dir = tmp_path / "audit"
+    change_dir = tmp_path / "changes"
     monkeypatch.setattr(scm_registry, "REGISTRY_PATH", reg_path)
     monkeypatch.setattr(impact_audit, "AUDIT_DIR", audit_dir)
     monkeypatch.setattr(impact_audit, "LOCK_PATH", audit_dir / ".run_lock")
+    monkeypatch.setattr(impact_changes, "CHANGE_DIR", change_dir)
     scm_registry.register_entry(
         ScmRegisterRequest(
             id="hdpdm01",
@@ -156,23 +156,22 @@ def test_run_impact_update_executes_auto_and_flag_actions(tmp_path, monkeypatch)
         lambda *args, **kwargs: {"door_run": "BODY", "door_header": "HEADER"},
     )
 
-    class _FakeRg:
-        @staticmethod
-        def generate_uds_source_sections(_source_root):
-            return {
-                "call_map": {"door_run": ["door_helper"]},
-                "function_details_by_name": {
-                    "door_run": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
-                    "door_header": {"module_name": "door", "file": "Sources/APP/Ap_Door.h"},
-                    "door_helper": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
-                },
-            }
-
-    monkeypatch.setitem(__import__("sys").modules, "report_generator", _FakeRg)
+    monkeypatch.setattr(
+        impact_orchestrator,
+        "_load_source_sections",
+        lambda _source_root: {
+            "call_map": {"door_run": ["door_helper"]},
+            "function_details_by_name": {
+                "door_run": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
+                "door_header": {"module_name": "door", "file": "Sources/APP/Ap_Door.h"},
+                "door_helper": {"module_name": "door", "file": "Sources/APP/Ap_Door.c"},
+            },
+        },
+    )
     monkeypatch.setattr(
         impact_orchestrator,
         "_execute_auto_action",
-        lambda target, trigger, entry: {"output_path": str(tmp_path / f"{target}.out")},
+        lambda target, trigger, entry, target_functions=None: {"output_path": str(tmp_path / f"{target}.out")},
     )
     monkeypatch.setattr(
         impact_orchestrator,
@@ -199,8 +198,49 @@ def test_run_impact_update_executes_auto_and_flag_actions(tmp_path, monkeypatch)
     assert result["actions"]["uds"]["status"] == "completed"
     assert result["actions"]["uds"]["output_path"].endswith("uds.out")
     assert result["actions"]["sts"]["artifact_path"].endswith("sts_review.md")
+    assert result["change_log"]["path"].endswith(".json")
     assert updated is not None
     assert updated.linked_docs.uds.endswith("uds.out")
+    assert any(p.name.startswith("change_") for p in change_dir.iterdir())
+
+
+def test_run_uds_generation_passes_source_root_to_script(tmp_path, monkeypatch):
+    from workflow import impact_orchestrator
+
+    captured = {}
+    out_dir = tmp_path / "backend" / "reports" / "uds_local"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    generated = out_dir / "uds_spec_generated_expanded_20260324_120000.docx"
+    generated.write_text("ok", encoding="utf-8")
+
+    class DummyRun:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr(impact_orchestrator, "REPO_ROOT", tmp_path)
+
+    def fake_run(cmd, cwd=None, env=None, capture_output=None, text=None, timeout=None, check=None):
+        captured["env"] = dict(env or {})
+        return DummyRun()
+
+    monkeypatch.setattr(impact_orchestrator.subprocess, "run", fake_run)
+
+    result = impact_orchestrator._run_uds_generation(
+        ChangeTrigger(
+            trigger_type="local",
+            scm_id="hdpdm01",
+            source_root=str(tmp_path / "src_root"),
+            scm_type="svn",
+            base_ref="",
+            changed_files=["Sources/APP/Ap_BuzzerCtrl_PDS.c"],
+            dry_run=False,
+            metadata={},
+        )
+    )
+
+    assert result["output_path"].endswith(".docx")
+    assert captured["env"]["UDS_SOURCE_ROOT"] == str(tmp_path / "src_root")
 
 
 def test_run_impact_update_falls_back_to_file_based_change_types(tmp_path, monkeypatch):
@@ -223,12 +263,11 @@ def test_run_impact_update_falls_back_to_file_based_change_types(tmp_path, monke
     )
     monkeypatch.setattr(impact_orchestrator, "classify_changed_functions", lambda *args, **kwargs: {})
 
-    class _FakeRg:
-        @staticmethod
-        def generate_uds_source_sections(_source_root):
-            return {"call_map": {}, "function_details_by_name": {}}
-
-    monkeypatch.setitem(__import__("sys").modules, "report_generator", _FakeRg)
+    monkeypatch.setattr(
+        impact_orchestrator,
+        "_load_source_sections",
+        lambda _source_root: {"call_map": {}, "function_details_by_name": {}},
+    )
 
     result = impact_orchestrator.run_impact_update(
         ChangeTrigger(

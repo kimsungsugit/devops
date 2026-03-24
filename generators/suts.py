@@ -1735,6 +1735,7 @@ def generate_suts(
     sds_docx_path: Optional[str] = None,
     uds_path: Optional[str] = None,
     hsis_path: Optional[str] = None,
+    target_function_names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Top-level SUTS generation pipeline.
 
@@ -1763,12 +1764,23 @@ def generate_suts(
 
     _logger.info("=== SUTS Generation Start ===")
     t0 = time.time()
+    target_name_set = {
+        str(name or "").strip().lower()
+        for name in (target_function_names or [])
+        if str(name or "").strip()
+    }
 
     _progress(5, "소스 코드 파싱 시작")
     globals_info_map: Dict[str, Dict[str, str]] = {}
     try:
-        from report_generator import generate_uds_source_sections
-        report_data = generate_uds_source_sections(source_root)
+        try:
+            from backend.helpers import _get_source_sections_cached
+
+            report_data = _get_source_sections_cached(source_root)
+        except Exception:
+            from report_generator import generate_uds_source_sections
+
+            report_data = generate_uds_source_sections(source_root)
         function_details = report_data.get("function_details", {})
         globals_info_map = report_data.get("globals_info_map", {}) or {}
         if not function_details:
@@ -1776,6 +1788,13 @@ def generate_suts(
     except Exception as e:
         _logger.warning("Full UDS source parse failed, trying lightweight: %s", e)
         function_details = _lightweight_parse(source_root)
+
+    if target_name_set:
+        function_details = {
+            fid: info
+            for fid, info in function_details.items()
+            if isinstance(info, dict) and str(info.get("name") or "").strip().lower() in target_name_set
+        }
 
     _progress(25, f"소스 파싱 완료 - {len(function_details)}개 함수 발견")
 

@@ -185,7 +185,7 @@ const LocalWorkflow = ({
 
   const pipelineSteps = useMemo(() => {
     const STEPS = [
-      { key: "scm", label: "SCM", icon: "\u{1F4E6}" },
+      { key: "scm", label: "SCM (Legacy)", icon: "\u{1F4E6}" },
       { key: "build", label: "Build", icon: "\u{1F528}" },
       { key: "tests", label: "Test", icon: "\u{1F9EA}" },
       { key: "coverage", label: "Coverage", icon: "\u{1F4CA}" },
@@ -1479,22 +1479,37 @@ const LocalWorkflow = ({
       )}
 
       {activeTab === "scm" && (
-        <LocalScmPanel
-          scmMode={scmMode}
-          setScmMode={setScmMode}
-          scmWorkdir={scmWorkdir}
-          setScmWorkdir={setScmWorkdir}
-          scmRepoUrl={scmRepoUrl}
-          setScmRepoUrl={setScmRepoUrl}
-          scmBranch={scmBranch}
-          setScmBranch={setScmBranch}
-          scmDepth={scmDepth}
-          setScmDepth={setScmDepth}
-          scmRevision={scmRevision}
-          setScmRevision={setScmRevision}
-          runScm={runScm}
-          scmOutput={scmOutput}
-        />
+        <div>
+          <div className="card" style={{ padding: 14, marginBottom: 12 }}>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <strong>SCM Legacy Panel</strong>
+              {typeof onGoAnalyzer === "function" ? (
+                <button type="button" className="btn-outline" onClick={onGoAnalyzer}>
+                  Open Analyzer
+                </button>
+              ) : null}
+            </div>
+            <div className="hint" style={{ marginTop: 6 }}>
+              변경 감지, 영향 분석, AUTO/FLAG 결과 확인의 기본 진입점은 이제 Analyzer입니다. 이 탭은 기존 흐름 호환을 위해 남겨둔 legacy 패널입니다.
+            </div>
+          </div>
+          <LocalScmPanel
+            scmMode={scmMode}
+            setScmMode={setScmMode}
+            scmWorkdir={scmWorkdir}
+            setScmWorkdir={setScmWorkdir}
+            scmRepoUrl={scmRepoUrl}
+            setScmRepoUrl={setScmRepoUrl}
+            scmBranch={scmBranch}
+            setScmBranch={setScmBranch}
+            scmDepth={scmDepth}
+            setScmDepth={setScmDepth}
+            scmRevision={scmRevision}
+            setScmRevision={setScmRevision}
+            runScm={runScm}
+            scmOutput={scmOutput}
+          />
+        </div>
       )}
 
       {activeTab === "knowledge" && (
