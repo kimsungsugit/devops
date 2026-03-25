@@ -1,6 +1,31 @@
 """report_gen.uds_generator - Auto-split from report_generator.py"""
 # Re-import common dependencies
 import re
+
+# ---------------------------------------------------------------------------
+# Payload field name constants
+# ---------------------------------------------------------------------------
+# Two-level naming convention:
+#
+#   Function-level  (per-function dict, value = List[str] of variable names):
+#     KEY_FN_GLOBALS  — global  variables *used* by this function
+#     KEY_FN_STATICS  — static  variables *used* by this function
+#
+#   Module-level  (top-level payload, value = List[List[str]] 5-column table):
+#     KEY_MOD_GLOBALS — global  variable *definitions* table for the whole module
+#     KEY_MOD_STATICS — static  variable *definitions* table for the whole module
+#
+# Legacy alias: some older sidecar JSONs may still use the bare key "globals"
+# which maps to KEY_FN_GLOBALS.  Readers must handle the fallback
+# (see validation.py _extract_payload_function_details).
+#
+KEY_FN_GLOBALS = "globals_global"   # per-function: global var names list
+KEY_FN_STATICS = "globals_static"   # per-function: static var names list
+KEY_MOD_GLOBALS = "global_vars"     # module-level: global var definitions table
+KEY_MOD_STATICS = "static_vars"     # module-level: static var definitions table
+# Legacy key kept for backward compat when reading old sidecar JSON files
+KEY_FN_GLOBALS_LEGACY = "globals"
+# ---------------------------------------------------------------------------
 import os
 import json
 import csv

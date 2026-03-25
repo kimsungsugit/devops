@@ -1,6 +1,13 @@
 """report_gen.validation - Auto-split from report_generator.py"""
 # Re-import common dependencies
 import re
+
+# Payload field name constants (canonical source: report_gen.uds_generator)
+# Function-level (per-function, List[str]):
+#   KEY_FN_GLOBALS = "globals_global"  — global vars used by the function
+#   KEY_FN_STATICS = "globals_static"  — static vars used by the function
+# Legacy: older sidecar JSONs may use bare "globals" key → fall back to it when
+# reading (see _extract_payload_function_details / row.get("globals_global") or row.get("globals"))
 import os
 import json
 import csv
@@ -1004,9 +1011,11 @@ def build_uds_view_payload(
                 "precondition": str(row.get("precondition") or "").strip(),
                 "inputs": _clean_param_lines(row.get("inputs") or []),
                 "outputs": _clean_param_lines(row.get("outputs") or []),
+                # KEY_FN_GLOBALS — fall back to legacy "globals" key in old sidecar JSONs
                 "globals_global": _clean_param_lines(
                     row.get("globals_global") or row.get("globals") or []
                 ),
+                # KEY_FN_STATICS
                 "globals_static": _clean_param_lines(row.get("globals_static") or []),
                 "called": _extract_call_names(called_text),
                 "calling": _extract_call_names(calling_text),
@@ -1072,8 +1081,8 @@ def generate_uds_constraints_report(
                 "related": str(info.get("related") or ""),
                 "inputs": list(info.get("inputs") or []),
                 "outputs": list(info.get("outputs") or []),
-                "globals_global": list(info.get("globals_global") or []),
-                "globals_static": list(info.get("globals_static") or []),
+                "globals_global": list(info.get("globals_global") or info.get("globals") or []),  # KEY_FN_GLOBALS (+ legacy fallback)
+                "globals_static": list(info.get("globals_static") or []),  # KEY_FN_STATICS
                 "called": str(info.get("called") or ""),
                 "calling": str(info.get("calling") or ""),
             }

@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import patch
+
 from workflow.uds_ai import (
     _trim_text,
     _normalize_evidence_item,
@@ -12,6 +15,8 @@ from workflow.uds_ai import (
     _parse_decision,
     _quality_warnings,
     _validate_sections,
+    _repair_missing_sections,
+    _build_section_prompt,
 )
 
 
@@ -160,10 +165,96 @@ class TestValidateSections:
         assert _validate_sections(payload, detailed=True) is not None
 
     def test_missing_key(self):
+        # Only 1 key present (< 2 required) → returns None
         payload = {
             "overview": {},
-            "requirements": {},
-            "interfaces": {},
-            "notes": {},
         }
         assert _validate_sections(payload, detailed=False) is None
+
+
+class TestBuildSectionPrompt:
+    def test_normal_prompt_no_repair_marker(self):
+        prompt = _build_section_prompt("interfaces")
+        assert "interfaces" in prompt
+        assert "UDS Writer" in prompt
+        assert "REPAIR" not in prompt
+
+    def test_repair_prompt_has_marker(self):
+        prompt = _build_section_prompt("interfaces", repair=True)
+        assert "REPAIR" in prompt
+        assert "interfaces" in prompt
+        assert "UDS Writer" in prompt
+
+    def test_repair_prompt_contains_all_normal_content(self):
+        normal = _build_section_prompt("uds_frames")
+        repair = _build_section_prompt("uds_frames", repair=True)
+        # repair prompt는 normal보다 길어야 함
+        assert len(repair) > len(normal)
+        # ASIL/Related 규칙은 repair에도 포함
+        assert "ASIL" in repair
+        assert "Related ID" in repair
+
+
+class TestRepairMissingSections:
+    def _make_raw(self, **overrides):
+        base = {
+            "overview": {"text": "real overview", "evidence": []},
+            "requirements": {"text": "real reqs", "evidence": []},
+            "interfaces": {"text": "N/A", "evidence": []},
+            "uds_frames": {"text": "N/A", "evidence": []},
+            "notes": {"text": "N/A", "evidence": []},
+        }
+        base.update(overrides)
+        return base
+
+    def test_no_repair_when_all_present(self):
+        raw = {k: {"text": "real content", "evidence": []} for k in
+               ["overview", "requirements", "interfaces", "uds_frames", "notes"]}
+        result = _repair_missing_sections(raw, cfg={}, user_payload={}, analysis_payload={})
+        assert result is raw
+
+    def test_repairs_na_sections(self):
+        raw = self._make_raw()
+        repaired_section = {"text": "Interfaces description", "evidence": []}
+
+        def mock_call_role(cfg, *, role, stage, messages, temperature=0.2):
+            return {"output": json.dumps(repaired_section)}
+
+        with patch("workflow.uds_ai._call_role", side_effect=mock_call_role):
+            result = _repair_missing_sections(
+                raw, cfg={}, user_payload={}, analysis_payload={}
+            )
+
+        assert result["interfaces"]["text"] == "Interfaces description"
+        assert result["uds_frames"]["text"] == "Interfaces description"
+        assert result["notes"]["text"] == "Interfaces description"
+        assert result["overview"]["text"] == "real overview"
+        assert result["requirements"]["text"] == "real reqs"
+
+    def test_keeps_na_when_repair_fails(self):
+        raw = self._make_raw()
+
+        def mock_call_role(cfg, *, role, stage, messages, temperature=0.2):
+            return {"output": json.dumps({"text": "N/A", "evidence": []})}
+
+        with patch("workflow.uds_ai._call_role", side_effect=mock_call_role):
+            result = _repair_missing_sections(
+                raw, cfg={}, user_payload={}, analysis_payload={}
+            )
+
+        assert result["interfaces"]["text"] == "N/A"
+
+    def test_already_generated_included_in_prompt(self):
+        raw = self._make_raw()
+        captured_messages = []
+
+        def mock_call_role(cfg, *, role, stage, messages, temperature=0.2):
+            captured_messages.extend(messages)
+            return {"output": json.dumps({"text": "repaired", "evidence": []})}
+
+        with patch("workflow.uds_ai._call_role", side_effect=mock_call_role):
+            _repair_missing_sections(raw, cfg={}, user_payload={}, analysis_payload={})
+
+        user_content = json.loads(captured_messages[1]["content"])
+        assert "already_generated" in user_content
+        assert "overview" in user_content["already_generated"]

@@ -75,6 +75,7 @@ def test_write_and_list_change_logs(tmp_path, monkeypatch):
     items = impact_changes.list_change_logs("hdpdm01", limit=10)
     detail = impact_changes.load_change_log("impact_20260324_112921")
     fn_items = impact_changes.list_function_history("hdpdm01", "door_run", limit=10)
+    module_items = impact_changes.list_module_history("hdpdm01", "Door", limit=10)
 
     assert out.exists()
     assert len(items) == 1
@@ -82,3 +83,5 @@ def test_write_and_list_change_logs(tmp_path, monkeypatch):
     assert detail["summary"]["uds_changed_functions"] == 1
     assert len(fn_items) == 1
     assert fn_items[0]["uds_fields_changed"] == ["description", "calls_list"]
+    assert len(module_items) == 1
+    assert module_items[0]["matched_functions"] == ["door_run"]

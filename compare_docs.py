@@ -11,7 +11,7 @@ import re
 from collections import defaultdict
 
 # 파일 경로
-UDS_PATH = r"D:/Project/devops/260105/reports/uds_local/uds_local_20260318_091326.docx"
+UDS_PATH = r"D:/Project/devops/260105/backend/reports/uds_local/uds_spec_generated_expanded_20260325_094858.docx"
 SUDS_PATH = r"D:/Project/devops/260105/docs/(HDPDM01_SUDS) Software Unit Design Specification_v1.07_240213.docx"
 
 def load_doc(path):

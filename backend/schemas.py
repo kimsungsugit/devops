@@ -100,6 +100,7 @@ class ScmLinkedDocs(BaseModel):
     uds: str = ""
     sts: str = ""
     suts: str = ""
+    sits: str = ""
     srs: str = ""
     sds: str = ""
     hsis: str = ""
@@ -386,6 +387,14 @@ class EditorReadAbsRequest(BaseModel):
 class TextPreviewRequest(BaseModel):
     path: str
     max_chars: int = 20000
+
+
+class SdsViewRequest(BaseModel):
+    path: str
+    max_items: int = 500
+    changed_functions: Dict[str, str] = {}
+    changed_files: List[str] = []
+    flagged_modules: List[str] = []
 
 
 class OpenFolderRequest(BaseModel):

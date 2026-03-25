@@ -48,6 +48,60 @@ def _append_evidence(info: dict, field: str, value: str) -> None:
     info[field] = values
 
 
+def _normalize_field_entry(entry: str) -> str:
+    text = str(entry or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^\[INDIRECT2\]\s+", "[INDIRECT-2HOP] ", text, flags=re.I)
+    text = re.sub(r"^\[INDIRECT\]\s+", "[INDIRECT-1HOP] ", text, flags=re.I)
+    text = re.sub(r"^\[INOUT\]\s+", "[IN/OUT] ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _normalize_field_list(values: list[str] | None) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        text = _normalize_field_entry(str(raw or ""))
+        if not text:
+            continue
+        key = re.sub(r"^\[[^\]]+\]\s*", "", text).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _parse_signature_params_simple(signature: str) -> list[str]:
+    sig = str(signature or "").strip()
+    if not sig or "(" not in sig or ")" not in sig:
+        return []
+    inner = sig.split("(", 1)[1].rsplit(")", 1)[0].strip()
+    if not inner or inner.lower() == "void":
+        return []
+    result: list[str] = []
+    for raw in inner.split(","):
+        token = str(raw or "").strip()
+        if token:
+            result.append(f"[IN] {token}")
+    return result
+
+
+def _parse_signature_outputs_simple(signature: str, function_name: str) -> list[str]:
+    sig = str(signature or "").strip()
+    fn_name = str(function_name or "").strip()
+    if not sig:
+        return []
+    head = sig.split(fn_name, 1)[0].strip() if fn_name and fn_name in sig else sig
+    head = re.sub(r"\b(?:static|inline|extern|const|volatile)\b", "", head, flags=re.I)
+    ret = re.sub(r"\s+", " ", head).strip(" *")
+    if not ret or ret.lower() == "void":
+        return []
+    return [f"[OUT] return {ret}"]
+
+
 def _read_xlsx_rows(path: Path) -> str:
     try:
         import pandas as pd  # type: ignore
@@ -166,6 +220,16 @@ def _enrich_source_sections_with_docs(
     for info in details.values():
         if not isinstance(info, dict):
             continue
+        prototype = str(info.get("prototype") or "").strip()
+        if prototype and not str(info.get("signature") or "").strip():
+            info["signature"] = prototype
+        signature = str(info.get("signature") or info.get("prototype") or "").strip()
+        if signature and not (info.get("inputs") or []):
+            info["inputs"] = _parse_signature_params_simple(signature)
+        if signature and not (info.get("outputs") or []):
+            info["outputs"] = _parse_signature_outputs_simple(signature, str(info.get("name") or ""))
+        for field_name in ("inputs", "outputs", "globals_global", "globals_static"):
+            info[field_name] = _normalize_field_list(info.get(field_name) or [])
         if str(info.get("description_source") or "").strip() in {"sds", "sds_match"}:
             _append_evidence(info, "description_evidence_sources", "sds")
         if str(info.get("related_source") or "").strip() in {"sds", "hsis", "srs"}:

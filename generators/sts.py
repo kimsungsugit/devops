@@ -249,12 +249,40 @@ def _load_uds_descriptions(uds_path: str) -> Dict[str, str]:
 
 
 def _load_stp_context(stp_path: str) -> str:
-    """Extract test strategy/scope text from an STP DOCX for AI prompt context."""
+    """Extract test strategy/scope text from an STP document (.docx/.pdf/.txt)."""
     if not stp_path:
         return ""
     p = Path(stp_path)
     if not p.exists():
         return ""
+
+    suffix = p.suffix.lower()
+
+    # ── Plain text ────────────────────────────────────────────────────────
+    if suffix == ".txt":
+        try:
+            return p.read_text(encoding="utf-8", errors="replace")[:8000]
+        except Exception:
+            return ""
+
+    # ── PDF ───────────────────────────────────────────────────────────────
+    if suffix == ".pdf":
+        text = ""
+        try:
+            from pdfminer.high_level import extract_text as _pdf_extract  # type: ignore
+            text = _pdf_extract(str(p))
+        except ImportError:
+            try:
+                import pypdf  # type: ignore
+                reader = pypdf.PdfReader(str(p))
+                text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return text[:8000]
+
+    # ── DOCX ──────────────────────────────────────────────────────────────
     try:
         import docx as _docx  # type: ignore
         doc = _docx.Document(str(p))
@@ -466,11 +494,15 @@ def parse_srs_docx_tables(srs_path: str) -> List[Dict[str, Any]]:
     """
     try:
         from docx import Document
-    except ImportError:
-        _logger.warning("python-docx not installed; cannot parse SRS DOCX tables")
+    except (ImportError, Exception) as _docx_err:
+        _logger.warning("python-docx not available; cannot parse SRS DOCX tables: %s", _docx_err)
         return []
 
-    doc = Document(srs_path)
+    try:
+        doc = Document(srs_path)
+    except Exception as _open_err:
+        _logger.warning("parse_srs_docx_tables: cannot open %s: %s", srs_path, _open_err)
+        return []
     results: List[Dict[str, Any]] = []
     seen_ids: set = set()
 

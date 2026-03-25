@@ -18,7 +18,7 @@ from backend.services.scm_registry import (
 )
 from backend.services.local_service import svn_info_url
 from workflow.impact_audit import list_impact_audits
-from workflow.impact_changes import list_change_logs, list_function_history, load_change_log
+from workflow.impact_changes import list_change_logs, list_function_history, list_module_history, load_change_log
 from workflow.impact_jobs import list_jobs, load_job
 
 
@@ -213,4 +213,13 @@ def scm_change_history_function(entry_id: str, function_name: str, limit: int = 
     if entry is None:
         raise HTTPException(status_code=404, detail="registry entry not found")
     items = list_function_history(entry_id, function_name, limit=limit)
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+@router.get("/api/scm/change-history/module/{entry_id}/{module_name}")
+def scm_change_history_module(entry_id: str, module_name: str, limit: int = 20) -> Dict[str, Any]:
+    entry = get_registry_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="registry entry not found")
+    items = list_module_history(entry_id, module_name, limit=limit)
     return {"ok": True, "items": items, "count": len(items)}

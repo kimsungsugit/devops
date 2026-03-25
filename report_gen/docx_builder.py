@@ -1,6 +1,14 @@
 """report_gen.docx_builder - Auto-split from report_generator.py"""
 # Re-import common dependencies
 import re
+
+# Payload field name constants (canonical source: report_gen.uds_generator)
+# Function-level (per-function, List[str]):
+#   KEY_FN_GLOBALS = "globals_global"  — global vars used by the function
+#   KEY_FN_STATICS = "globals_static"  — static vars used by the function
+# Module-level (top-level payload, List[List[str]] 5-column table):
+#   KEY_MOD_GLOBALS = "global_vars"    — global var definitions table
+#   KEY_MOD_STATICS = "static_vars"    — static var definitions table
 import os
 import json
 import csv

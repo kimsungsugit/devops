@@ -368,6 +368,17 @@ def _extract_sds_partition_map(doc_path: str) -> Dict[str, Dict[str, str]]:
         return {}
     mapping: Dict[str, Dict[str, str]] = {}
 
+    def _collapse_adjacent_duplicates(values: List[str]) -> List[str]:
+        result: List[str] = []
+        for value in [str(v or "").strip() for v in values]:
+            if not value:
+                result.append("")
+                continue
+            if result and result[-1] == value:
+                continue
+            result.append(value)
+        return result
+
     def _add_entry(name: str, asil: str, related: str, desc: str) -> None:
         key = str(name or "").strip().lower()
         if not key:
@@ -404,6 +415,7 @@ def _extract_sds_partition_map(doc_path: str) -> Dict[str, Dict[str, str]]:
             iface_header: List[str] = []
             for row in table.rows[1:]:
                 cells = [c.text.strip() for c in row.cells]
+                compact_cells = _collapse_adjacent_duplicates(cells)
                 first = cells[0].lower() if cells else ""
                 last_val = ""
                 for c in reversed(cells):
@@ -431,7 +443,7 @@ def _extract_sds_partition_map(doc_path: str) -> Dict[str, Dict[str, str]]:
                     continue
                 elif first == "no" and ("name" in " ".join(cells).lower()):
                     in_interface = True
-                    iface_header = [c.lower() for c in cells]
+                    iface_header = [c.lower() for c in compact_cells]
                     continue
                 elif "software component design" in first or "component design" in first:
                     in_interface = False
@@ -440,13 +452,31 @@ def _extract_sds_partition_map(doc_path: str) -> Dict[str, Dict[str, str]]:
                 if in_interface and first and first[0].isdigit():
                     fname = ""
                     fdesc = ""
-                    for c in cells[1:]:
-                        cv = c.strip()
-                        if not fname and cv and not cv[0].isdigit():
-                            fname = cv
-                        elif fname and cv and cv != fname:
-                            fdesc = cv
-                            break
+                    name_idx = -1
+                    desc_idx = -1
+                    if iface_header:
+                        for i, header_name in enumerate(iface_header):
+                            h = str(header_name or "").strip().lower()
+                            if name_idx < 0 and h == "name":
+                                name_idx = i
+                            if desc_idx < 0 and "description" in h:
+                                desc_idx = i
+                    if name_idx >= 0 and name_idx < len(compact_cells):
+                        fname = compact_cells[name_idx].strip()
+                    if desc_idx >= 0 and desc_idx < len(compact_cells):
+                        fdesc = compact_cells[desc_idx].strip()
+                    if not fname:
+                        for cv in compact_cells[1:]:
+                            token = cv.strip()
+                            if token and not token[0].isdigit():
+                                fname = token
+                                break
+                    if not fdesc:
+                        for cv in reversed(compact_cells[1:]):
+                            token = cv.strip()
+                            if token and token != fname and not re.fullmatch(r"(?:static\s+)?(?:void|u8|u16|u32|u64|s8|s16|s32|s64|enum)(?:\s*\(\s*void\s*\))?", token, re.I):
+                                fdesc = token
+                                break
                     if fname:
                         func_rows.append({"name": fname, "desc": fdesc})
 

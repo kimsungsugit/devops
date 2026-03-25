@@ -347,8 +347,16 @@ def _quality_warnings(sections: Dict[str, Any]) -> List[str]:
     return warnings
 
 
-def _build_section_prompt(section_key: str) -> str:
+def _build_section_prompt(section_key: str, *, repair: bool = False) -> str:
+    repair_header = (
+        "IMPORTANT: This is a REPAIR attempt. "
+        "The previous LLM response truncated and produced N/A for this section. "
+        "You MUST generate substantive content using the provided source data. "
+        "Writing N/A is only acceptable if the source data contains absolutely "
+        "zero relevant information for this section.\n"
+    ) if repair else ""
     return (
+        f"{repair_header}"
         f"You are a UDS Writer for section: {section_key}.\n"
         "Return JSON only: {\"text\":\"...\",\"evidence\":[{source_type, source_file, excerpt, score}]}.\n"
         "Safety: Do NOT invent facts. If insufficient data, write \"N/A\" and evidence can be empty.\n"
@@ -363,6 +371,63 @@ def _build_section_prompt(section_key: str) -> str:
         "- Use @requirement/@req tags from Doxygen comments.\n"
         "- Trace through call graphs to find indirect requirement links."
     )
+
+
+def _repair_missing_sections(
+    raw: Dict[str, Any],
+    *,
+    cfg: Dict[str, Any],
+    user_payload: Dict[str, Any],
+    analysis_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Regenerate sections that were auto-filled with N/A by _validate_sections."""
+    REQUIRED = ["overview", "requirements", "interfaces", "uds_frames", "notes"]
+    missing = [
+        k for k in REQUIRED
+        if not raw.get(k) or str(raw[k].get("text", "")).strip().upper() == "N/A"
+    ]
+    if not missing:
+        return raw
+
+    logger.info("_repair_missing_sections: regenerating %d sections: %s", len(missing), missing)
+
+    already_generated = {
+        k: raw[k] for k in REQUIRED if k not in missing and raw.get(k)
+    }
+
+    def _run_repair(key: str) -> Tuple[str, Dict[str, Any]]:
+        messages = [
+            {"role": "system", "content": _build_section_prompt(key, repair=True)},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        **user_payload,
+                        "analysis_context": analysis_payload,
+                        "target_section": key,
+                        "already_generated": already_generated,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
+        ]
+        res = _call_role(cfg, role="writer", stage=f"uds_repair_{key}", messages=messages, temperature=0.2)
+        reply = res.get("output") if isinstance(res, dict) else None
+        payload = _extract_json_payload(reply or "") or {}
+        return key, _normalize_section(payload)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(_run_repair, key) for key in missing]
+        for future in concurrent.futures.as_completed(futures):
+            key, section = future.result()
+            if section and str(section.get("text", "")).strip().upper() != "N/A":
+                raw[key] = section
+                logger.info("_repair_missing_sections: repaired section '%s'", key)
+            else:
+                logger.warning("_repair_missing_sections: repair failed for '%s', keeping N/A", key)
+
+    return raw
 
 
 def _parallel_sections(
@@ -451,6 +516,12 @@ def generate_uds_ai_sections(
 
     if bool(getattr(config, "UDS_PARALLEL_SECTIONS", False)):
         sections = _parallel_sections(cfg, user_payload, analysis_payload)
+        sections = _repair_missing_sections(
+            sections,
+            cfg=cfg,
+            user_payload=user_payload,
+            analysis_payload=analysis_payload,
+        )
         logic_payload = {"logic_diagrams": []}
         if logic_titles:
             logic_prompt = (
@@ -586,6 +657,13 @@ def generate_uds_ai_sections(
             }
         )
         return None
+
+    raw = _repair_missing_sections(
+        raw,
+        cfg=cfg,
+        user_payload=user_payload,
+        analysis_payload=analysis_payload,
+    )
 
     review_prompt = _load_prompt("uds_reviewer")
     review_messages = [

@@ -400,6 +400,15 @@ def _resolve_local_suts_path(report_dir: Optional[str], filename: str) -> Path:
     return _local_suts_dir(base) / Path(filename).name
 
 
+def _local_sits_dir(base: Path) -> Path:
+    return base / "sits"
+
+
+def _resolve_local_sits_path(report_dir: Optional[str], filename: str) -> Path:
+    base = _resolve_report_dir(report_dir)
+    return _local_sits_dir(base) / Path(filename).name
+
+
 def _open_local_path(target: Path) -> None:
     if os.name == "nt":
         os.startfile(str(target))  # type: ignore[attr-defined]

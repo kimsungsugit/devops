@@ -21,7 +21,16 @@ _CALL_SKIP_WORDS = {
     "case",
     "else",
 }
-_STATIC_STORAGE_WORDS = ("static", "STATIC", "FAST_STATIC", "NEAR_STATIC")
+_STATIC_STORAGE_WORDS = (
+    "static",
+    "STATIC",
+    "FAST_STATIC",
+    "NEAR_STATIC",
+    "STATIC_VAR",
+    "STATIC_DATA",
+    "FAR_STATIC",
+    "SECTION_STATIC",
+)
 _DECL_QUALIFIER_WORDS = {
     "const",
     "volatile",
@@ -150,6 +159,8 @@ def _parse_c_declaration_statement(stmt: str) -> List[Dict[str, str]]:
         return []
     if re.search(r"\b(?:if|for|while|switch)\b", compact):
         return []
+    # Strip __attribute__((...)) annotations before parsing
+    compact = re.sub(r"__attribute__\s*\(\(.*?\)\)", "", compact).strip()
 
     storage_words: List[str] = []
     qualifiers: List[str] = []
@@ -184,7 +195,9 @@ def _parse_c_declaration_statement(stmt: str) -> List[Dict[str, str]]:
         remainder = type_tokens.pop()
     if not type_tokens:
         return []
-    if "(" in remainder and "(*" not in remainder:
+    # Only reject function declarations; allow () in initializer (e.g. static int x = fn())
+    name_part = remainder.split("=", 1)[0] if "=" in remainder else remainder
+    if "(" in name_part and "(*" not in name_part:
         return []
 
     base_type = " ".join(qualifiers + type_tokens).strip()
@@ -342,19 +355,125 @@ def _extract_c_global_candidates(text: str) -> List[Dict[str, str]]:
 
 
 def _extract_local_static_candidates(body_text: str) -> List[str]:
+    """Return names of local static variables declared inside a function body.
+
+    Strategy: combine AST-based detection (tree-sitter) with regex-based
+    scanning.  AST handles standard ``static`` and custom macro storage words
+    accurately; regex supplements with function-pointer declarators
+    (``(*pfCb)``) that tree-sitter cannot parse cleanly.
+    """
     if not body_text:
         return []
+    regex_names = _extract_local_static_candidates_regex(body_text)
+    ast_names = _extract_local_static_candidates_ast(body_text)
+    if ast_names is None:
+        return regex_names
+    # Merge: AST results first, then any regex-only names appended
+    seen: Set[str] = set(ast_names)
+    merged = list(ast_names)
+    for name in regex_names:
+        if name not in seen:
+            seen.add(name)
+            merged.append(name)
+    return merged
+
+
+def _extract_local_static_candidates_regex(body_text: str) -> List[str]:
+    """Regex-based local static variable detection (fallback)."""
+    _static_kw_pat = re.compile(
+        r"\b(?:" + "|".join(re.escape(w) for w in _STATIC_STORAGE_WORDS) + r")\b"
+    )
     names: List[str] = []
+    seen: Set[str] = set()
     for stmt in _iter_c_statements(body_text, top_level_only=False):
-        if not re.search(r"\b(?:static|STATIC|FAST_STATIC|NEAR_STATIC)\b", stmt):
+        if not _static_kw_pat.search(stmt):
             continue
         for item in _parse_c_declaration_statement(stmt):
             if str(item.get("static") or "").lower() != "true":
                 continue
             name = str(item.get("name") or "").strip()
-            if name and name not in names:
+            if name and name not in seen:
+                seen.add(name)
                 names.append(name)
     return names
+
+
+def _extract_local_static_candidates_ast(body_text: str) -> Optional[List[str]]:
+    """AST-based local static variable detection using tree-sitter.
+
+    Returns a list of variable names on success, or None if tree-sitter is
+    unavailable or parsing fails (caller falls back to regex).
+    """
+    try:
+        from tree_sitter import Language, Parser  # type: ignore
+        import tree_sitter_c as tsc  # type: ignore
+    except ImportError:
+        return None
+
+    # Wrap the function body in a dummy function so the parser sees valid C
+    wrapped = b"void __dummy__(void) {\n" + body_text.encode("utf-8", errors="replace") + b"\n}\n"
+    try:
+        lang = Language(tsc.language())
+        parser = Parser(lang)
+        tree = parser.parse(wrapped)
+    except Exception:
+        return None
+
+    names: List[str] = []
+    seen: Set[str] = set()
+    _ast_collect_static_decls(tree.root_node, wrapped, names, seen)
+    return names
+
+
+_STATIC_STORAGE_BYTES = {w.encode() for w in _STATIC_STORAGE_WORDS}
+
+
+def _ast_collect_static_decls(
+    node: Any, source: bytes, names: List[str], seen: Set[str]
+) -> None:
+    """Recursively walk an AST node and collect names of static variable declarations.
+
+    Handles both the standard C ``static`` keyword (parsed as
+    ``storage_class_specifier``) and project-specific macro aliases such as
+    ``FAST_STATIC`` or ``STATIC`` (parsed as type identifiers by tree-sitter).
+    """
+    if node.type == "declaration":
+        is_static = any(
+            (
+                child.type == "storage_class_specifier"
+                and source[child.start_byte : child.end_byte] == b"static"
+            )
+            or source[child.start_byte : child.end_byte] in _STATIC_STORAGE_BYTES
+            for child in node.children
+        )
+        if is_static:
+            for child in node.children:
+                _ast_collect_declarator_names(child, source, names, seen)
+    for child in node.children:
+        _ast_collect_static_decls(child, source, names, seen)
+
+
+def _ast_collect_declarator_names(
+    node: Any, source: bytes, names: List[str], seen: Set[str]
+) -> None:
+    """Extract declared variable names from an AST declarator node."""
+    if node.type in ("identifier",):
+        name = source[node.start_byte:node.end_byte].decode("utf-8", errors="ignore").strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    elif node.type in (
+        "init_declarator",
+        "pointer_declarator",
+        "array_declarator",
+        "parenthesized_declarator",
+    ):
+        for child in node.children:
+            _ast_collect_declarator_names(child, source, names, seen)
+    elif node.type == "declaration":
+        # Nested (e.g. for-loop init)
+        for child in node.children:
+            _ast_collect_declarator_names(child, source, names, seen)
 
 
 def _extract_fallback_call_names(

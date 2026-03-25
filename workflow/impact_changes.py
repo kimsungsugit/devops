@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+from workflow.function_module_map import build_function_module_index
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +201,28 @@ def build_change_log(
             "validation_report_path": str((suts_info.get("result") or {}).get("validation_report_path") or ""),
         }
 
+    sits_info = actions.get("sits") if isinstance(actions.get("sits"), dict) else {}
+    if sits_info:
+        exec_result = sits_info.get("result") or {}
+        after_tc = int(exec_result.get("test_case_count") or sits_info.get("test_case_count") or 0)
+        after_sub = int(exec_result.get("total_sub_cases") or sits_info.get("total_sub_cases") or 0)
+        before_payload = _load_json(_artifact_payload_path(previous_linked_docs.get("sits") or "") or Path("_missing_"))
+        before_tc = int(before_payload.get("test_case_count") or 0)
+        before_sub = int(before_payload.get("total_sub_cases") or 0)
+        docs["sits"] = {
+            "status": str(sits_info.get("status") or "skipped"),
+            "summary": {
+                "test_case_count": after_tc,
+                "total_sub_cases": after_sub,
+                "before_test_case_count": before_tc,
+                "before_total_sub_cases": before_sub,
+                "delta_cases": after_tc - before_tc,
+                "delta_sub_cases": after_sub - before_sub,
+            },
+            "artifact_path": str(sits_info.get("output_path") or ""),
+            "validation_report_path": str(exec_result.get("validation_report_path") or ""),
+        }
+
     for target in ("sts", "sds"):
         info = actions.get(target) if isinstance(actions.get(target), dict) else {}
         if not info:
@@ -216,6 +239,9 @@ def build_change_log(
         "suts_changed_functions": int(docs.get("suts", {}).get("summary", {}).get("changed_functions", 0)),
         "suts_changed_cases": int(docs.get("suts", {}).get("summary", {}).get("changed_cases", 0)),
         "suts_changed_sequences": int(docs.get("suts", {}).get("summary", {}).get("changed_sequences", 0)),
+        "sits_test_cases": int(docs.get("sits", {}).get("summary", {}).get("test_case_count", 0)),
+        "sits_sub_cases": int(docs.get("sits", {}).get("summary", {}).get("total_sub_cases", 0)),
+        "sits_delta_cases": int(docs.get("sits", {}).get("summary", {}).get("delta_cases", 0)),
         "sts_flagged": int(docs.get("sts", {}).get("summary", {}).get("flagged_functions", 0)),
         "sds_flagged": int(docs.get("sds", {}).get("summary", {}).get("flagged_functions", 0)),
     }
@@ -239,6 +265,7 @@ def build_change_log(
         "artifacts": {
             "uds": str((docs.get("uds") or {}).get("artifact_path") or ""),
             "suts": str((docs.get("suts") or {}).get("artifact_path") or ""),
+            "sits": str((docs.get("sits") or {}).get("artifact_path") or ""),
             "sts_review": str((docs.get("sts") or {}).get("artifact_path") or ""),
             "sds_review": str((docs.get("sds") or {}).get("artifact_path") or ""),
         },
@@ -328,6 +355,41 @@ def list_function_history(scm_id: str, function_name: str, limit: int = 20) -> L
                 "change_type": changed.get(target, ""),
                 "uds_fields_changed": list((uds_entry or {}).get("fields_changed") or []),
                 "suts_changed_cases": int(suts_doc.get("summary", {}).get("changed_cases", 0)) if isinstance(suts_doc.get("summary"), dict) else 0,
+            }
+        )
+        if len(items) >= max(1, int(limit or 20)):
+            break
+    return items
+
+
+def list_module_history(scm_id: str, module_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    target = str(module_name or "").strip().lower()
+    if not target:
+        return []
+    items: List[Dict[str, Any]] = []
+    for item in list_change_logs(scm_id=scm_id, limit=max(1, int(limit or 20)) * 5):
+        try:
+            detail = load_change_log(item["run_id"])
+        except KeyError:
+            continue
+        changed = detail.get("changed_functions") if isinstance(detail.get("changed_functions"), dict) else {}
+        changed_files = detail.get("changed_files") if isinstance(detail.get("changed_files"), list) else []
+        module_index = build_function_module_index(changed, changed_files=changed_files)
+        matched_functions = [
+            name
+            for name, info in module_index.items()
+            if str(info.get("best_module") or "").strip().lower() == target
+        ]
+        if not matched_functions:
+            continue
+        items.append(
+            {
+                "run_id": detail.get("run_id") or item["run_id"],
+                "timestamp": detail.get("timestamp") or item["timestamp"],
+                "module_name": module_name,
+                "matched_functions": matched_functions,
+                "matched_count": len(matched_functions),
+                "changed_files": changed_files,
             }
         )
         if len(items) >= max(1, int(limit or 20)):

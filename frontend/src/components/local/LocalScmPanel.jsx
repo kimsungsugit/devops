@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import ExcelArtifactViewer from "../ExcelArtifactViewer";
 import ReportMarkdownPreview from "../ReportMarkdownPreview";
 
-const ACTION_ORDER = ["uds", "suts", "sts", "sds"];
+const ACTION_ORDER = ["uds", "suts", "sits", "sts", "sds"];
 
 const toneForAction = (info) => {
   const mode = String(info?.mode || "-").toUpperCase();
@@ -208,7 +208,7 @@ const LocalScmPanel = ({
   const [selectedChangeRunId, setSelectedChangeRunId] = useState("");
   const [selectedChangeDetail, setSelectedChangeDetail] = useState(null);
   const [manualChangedFiles, setManualChangedFiles] = useState("");
-  const [targets, setTargets] = useState(["uds", "suts", "sts", "sds"]);
+  const [targets, setTargets] = useState(["uds", "suts", "sits", "sts", "sds"]);
   const [artifactPreview, setArtifactPreview] = useState({ path: "", text: "", truncated: false });
   const [artifactPreviewLoading, setArtifactPreviewLoading] = useState(false);
   const [reviewTab, setReviewTab] = useState("summary");
@@ -219,6 +219,10 @@ const LocalScmPanel = ({
   const [sutsViewData, setSutsViewData] = useState(null);
   const [sutsPreviewData, setSutsPreviewData] = useState(null);
   const [sutsPreviewSheet, setSutsPreviewSheet] = useState(0);
+  const [sitsViewLoading, setSitsViewLoading] = useState(false);
+  const [sitsViewData, setSitsViewData] = useState(null);
+  const [sitsPreviewData, setSitsPreviewData] = useState(null);
+  const [sitsPreviewSheet, setSitsPreviewSheet] = useState(0);
   const [panelNotice, setPanelNotice] = useState("");
   const [runStage, setRunStage] = useState("");
   const [runStartedAt, setRunStartedAt] = useState(null);
@@ -237,6 +241,7 @@ const LocalScmPanel = ({
     source_root: "",
   });
   const [registrySaving, setRegistrySaving] = useState(false);
+  const [showAdvancedPanels, setShowAdvancedPanels] = useState(false);
 
   const selectedRegistry = useMemo(
     () => registryItems.find((item) => item.id === selectedScmId) || null,
@@ -257,12 +262,16 @@ const LocalScmPanel = ({
   const impactGroups = impactResult?.impact || {};
   const activeUdsOutputPath = String(impactResult?.actions?.uds?.output_path || "").trim();
   const activeSutsOutputPath = String(impactResult?.actions?.suts?.output_path || "").trim();
+  const activeSitsOutputPath = String(impactResult?.actions?.sits?.output_path || "").trim();
   const currentChangeSummary = impactResult?.change_log?.summary || {};
   const selectedUdsDiff = Array.isArray(selectedChangeDetail?.documents?.uds?.changed_functions)
     ? selectedChangeDetail.documents.uds.changed_functions
     : [];
   const selectedSutsDiff = Array.isArray(selectedChangeDetail?.documents?.suts?.changed_cases)
     ? selectedChangeDetail.documents.suts.changed_cases
+    : [];
+  const selectedSitsDiff = Array.isArray(selectedChangeDetail?.documents?.sits?.changed_cases)
+    ? selectedChangeDetail.documents.sits.changed_cases
     : [];
   const selectedReviewReasons = {
     sts: Array.isArray(selectedChangeDetail?.documents?.sts?.flagged_functions)
@@ -327,17 +336,17 @@ const LocalScmPanel = ({
   const slowRunHint = useMemo(() => {
     if (!impactLoading) return "";
     if (runElapsedSec >= 180) return "이 프로젝트의 dry-run은 실제로 3~5분 이상 걸릴 수 있습니다.";
-    if (runElapsedSec >= 60) return "대형 프로젝트 분석은 수 분 이상 걸릴 수 있습니다.";
-    if (runElapsedSec >= 20) return "변경 함수와 영향 범위를 계산 중입니다.";
+    if (runElapsedSec >= 60) return "대형 프로젝트 분석은 1분 이상 걸릴 수 있습니다.";
+    if (runElapsedSec >= 20) return "蹂寃??⑥닔? ?곹뼢 踰붿쐞瑜?怨꾩궛 以묒엯?덈떎.";
     return "";
   }, [impactLoading, runElapsedSec]);
   const activeJobStatus = String(activeJob?.status || "").toLowerCase();
   const recommendedNextStep = useMemo(() => {
     if (impactErrorInfo) {
       if (impactErrorInfo.code === "run_lock_active") return "다음 추천 액션: 현재 실행이 끝난 뒤 Recent Runs에서 상태를 확인하고 다시 시도하세요.";
-      if (impactErrorInfo.code === "svn_connection_error") return "다음 추천 액션: SVN working copy 경로와 연결 상태를 먼저 확인하세요.";
-      if (impactErrorInfo.code === "file_not_found") return "다음 추천 액션: source_root 및 linked_docs 경로를 점검하세요.";
-      if (impactErrorInfo.retryable) return "다음 추천 액션: 원인 확인 후 다시 시도하세요.";
+      if (impactErrorInfo.code === "svn_connection_error") return "?ㅼ쓬 異붿쿇 ?≪뀡: SVN working copy 寃쎈줈? ?곌껐 ?곹깭瑜?癒쇱? ?뺤씤?섏꽭??";
+      if (impactErrorInfo.code === "file_not_found") return "?ㅼ쓬 異붿쿇 ?≪뀡: source_root 諛?linked_docs 寃쎈줈瑜??먭??섏꽭??";
+      if (impactErrorInfo.retryable) return "?ㅼ쓬 異붿쿇 ?≪뀡: ?먯씤 ?뺤씤 ???ㅼ떆 ?쒕룄?섏꽭??";
     }
     if (!impactResult) return "";
     if (impactResult.dry_run) {
@@ -345,12 +354,12 @@ const LocalScmPanel = ({
       const autoTargets = ACTION_ORDER.filter((key) => String(actions?.[key]?.mode || "").toUpperCase() === "AUTO");
       const flagTargets = ACTION_ORDER.filter((key) => String(actions?.[key]?.mode || "").toUpperCase() === "FLAG");
       if (autoTargets.length > 0) {
-        return `다음 추천 액션: ${autoTargets.map((item) => item.toUpperCase()).join(", ")} 자동 갱신을 실행하세요.`;
+        return `?ㅼ쓬 異붿쿇 ?≪뀡: ${autoTargets.map((item) => item.toUpperCase()).join(", ")} ?먮룞 媛깆떊???ㅽ뻾?섏꽭??`;
       }
       if (flagTargets.length > 0) {
         return `다음 추천 액션: ${flagTargets.map((item) => item.toUpperCase()).join(", ")} review artifact를 먼저 확인하세요.`;
       }
-      return "다음 추천 액션: 현재 영향이 없으므로 실행 없이 유지해도 됩니다.";
+      return "?ㅼ쓬 異붿쿇 ?≪뀡: ?꾩옱 ?곹뼢???놁쑝誘濡??ㅽ뻾 ?놁씠 ?좎??대룄 ?⑸땲??";
     }
     if (activeUdsOutputPath || activeSutsOutputPath) {
       return "다음 추천 액션: 생성된 UDS/SUTS 결과와 STS/SDS review artifact를 확인하세요.";
@@ -594,7 +603,7 @@ const LocalScmPanel = ({
           setImpactResult(resultData?.result || null);
           setImpactError("");
           setImpactErrorInfo(null);
-          setPanelNotice(job.dry_run ? "Dry run 완료" : "Impact 실행 완료");
+          setPanelNotice(job.dry_run ? "Dry run ?꾨즺" : "Impact ?ㅽ뻾 ?꾨즺");
           setImpactLoading(false);
           setRunStage("");
           setRunStartedAt(null);
@@ -607,7 +616,7 @@ const LocalScmPanel = ({
         if (status === "failed") {
           const error = job.error || {};
           const normalized = normalizeErrorPayload(error);
-          const title = String(normalized?.title || "Impact 실행 실패");
+          const title = String(normalized?.title || "Impact ?ㅽ뻾 ?ㅽ뙣");
           const detail = String(normalized?.detail || "").trim();
           setImpactError(detail ? `${title}: ${detail}` : title);
           setImpactErrorInfo(normalized);
@@ -623,7 +632,7 @@ const LocalScmPanel = ({
       } catch (e) {
         if (!cancelled) {
           setImpactError(e.message);
-          setImpactErrorInfo(normalizeErrorPayload({ title: "Job 상태 조회 실패", detail: e.message, retryable: true, code: "job_status_failed" }));
+          setImpactErrorInfo(normalizeErrorPayload({ title: "Job ?곹깭 議고쉶 ?ㅽ뙣", detail: e.message, retryable: true, code: "job_status_failed" }));
           setImpactLoading(false);
           setRunStage("");
         }
@@ -654,6 +663,13 @@ const LocalScmPanel = ({
     }
   }, [impactResult, activeSutsOutputPath, sutsViewData, sutsViewLoading]);
 
+  useEffect(() => {
+    if (!impactResult || impactResult.dry_run) return;
+    if (activeSitsOutputPath && !sitsViewData && !sitsViewLoading) {
+      loadSitsView(activeSitsOutputPath);
+    }
+  }, [impactResult, activeSitsOutputPath, sitsViewData, sitsViewLoading]);
+
   const refreshStatus = async () => {
     if (!selectedScmId) return;
     setStatusLoading(true);
@@ -663,7 +679,7 @@ const LocalScmPanel = ({
       if (!res.ok) throw new Error(await readErrorMessage(res));
       setStatusData(await res.json());
     } catch (e) {
-      setPanelNotice(`상태 확인 실패: ${e.message}`);
+      setPanelNotice(`?곹깭 ?뺤씤 ?ㅽ뙣: ${e.message}`);
     } finally {
       setStatusLoading(false);
       setRunStage("");
@@ -700,7 +716,7 @@ const LocalScmPanel = ({
 
   const copyPath = async (path, label) => {
     const ok = await copyText(path);
-    setPanelNotice(ok ? `${label} 경로를 복사했습니다.` : `${label} 경로 복사에 실패했습니다.`);
+    setPanelNotice(ok ? `${label} 寃쎈줈瑜?蹂듭궗?덉뒿?덈떎.` : `${label} 寃쎈줈 蹂듭궗???ㅽ뙣?덉뒿?덈떎.`);
   };
 
   const previewArtifact = async (path) => {
@@ -763,6 +779,27 @@ const LocalScmPanel = ({
     }
   };
 
+  const loadSitsView = async (path) => {
+    const filename = basename(path);
+    if (!filename || filename === "-") return;
+    setSitsViewLoading(true);
+    try {
+      const [viewRes, previewRes] = await Promise.all([
+        fetch(`/api/local/sits/view/${encodeURIComponent(filename)}`),
+        fetch(`/api/local/sits/preview/${encodeURIComponent(filename)}`),
+      ]);
+      if (!viewRes.ok) throw new Error(await readErrorMessage(viewRes));
+      if (!previewRes.ok) throw new Error(await readErrorMessage(previewRes));
+      setSitsViewData(await viewRes.json());
+      setSitsPreviewData(await previewRes.json());
+      setSitsPreviewSheet(0);
+    } catch (e) {
+      setPanelNotice(`SITS 미리보기 실패: ${e.message}`);
+    } finally {
+      setSitsViewLoading(false);
+    }
+  };
+
   const previewAuditItem = (item) => {
     if (!item) return;
     setReviewTab("summary");
@@ -796,7 +833,7 @@ const LocalScmPanel = ({
 
   const triggerImpact = async (dryRun) => {
     if (!selectedScmId) {
-      setImpactError("SCM registry 항목을 먼저 선택하세요.");
+      setImpactError("SCM registry ??ぉ??癒쇱? ?좏깮?섏꽭??");
       return;
     }
     setImpactLoading(true);
@@ -834,10 +871,10 @@ const LocalScmPanel = ({
         setSutsViewData(null);
         setSutsPreviewData(null);
       }
-      setPanelNotice(dryRun ? "Dry run job이 시작되었습니다." : "Impact 실행 job이 시작되었습니다.");
+      setPanelNotice(dryRun ? "Dry run job???쒖옉?섏뿀?듬땲??" : "Impact ?ㅽ뻾 job???쒖옉?섏뿀?듬땲??");
     } catch (e) {
       setImpactError(e.message);
-      setImpactErrorInfo(normalizeErrorPayload({ title: "Impact job 시작 실패", detail: e.message, retryable: true, code: "job_start_failed" }));
+      setImpactErrorInfo(normalizeErrorPayload({ title: "Impact job ?쒖옉 ?ㅽ뙣", detail: e.message, retryable: true, code: "job_start_failed" }));
       setImpactResult(null);
       setActiveJob(null);
       clearActiveJob();
@@ -920,66 +957,71 @@ const LocalScmPanel = ({
 
   return (
     <div className="scm-impact-page">
-      <div className="scm-impact-hero">
-        <div>
-          <h3>SCM Impact Console</h3>
-          <p className="hint">
-            변경 파일, 영향 함수, 자동 재생성 결과와 검토 필요 문서를 한 화면에서 확인합니다.
-          </p>
+      <div className="scm-impact-top-grid">
+        <div className="scm-impact-hero">
+          <div>
+            <h3>SCM Impact Console</h3>
+            <p className="hint">
+              변경 파일, 영향 함수, 자동 재생성 결과와 검토 필요 문서를 한 화면에서 확인합니다.
+            </p>
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <button type="button" className="btn-outline" onClick={loadRegistry} disabled={busy}>
+              {registryLoading ? "Registry..." : "Registry 새로고침"}
+            </button>
+            <button type="button" className="btn-outline" onClick={refreshStatus} disabled={!selectedScmId || busy}>
+              {statusLoading ? "상태 확인..." : "연결 상태 확인"}
+            </button>
+          </div>
         </div>
-        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className="btn-outline" onClick={loadRegistry} disabled={busy}>
-            {registryLoading ? "Registry..." : "Registry 새로고침"}
-          </button>
-          <button type="button" className="btn-outline" onClick={refreshStatus} disabled={!selectedScmId || busy}>
-            {statusLoading ? "상태 확인..." : "연결 상태 확인"}
-          </button>
-        </div>
-      </div>
 
-      {busy && (
-        <div className="scm-running-banner">
-          <span className="status-chip tone-check">RUNNING</span>
-          <span>{runSummary}</span>
-          {impactLoading ? <span className="hint">elapsed {runElapsedSec}s</span> : null}
-        </div>
-      )}
-      {slowRunHint ? <div className="hint" style={{ marginBottom: 10 }}>{slowRunHint}</div> : null}
+        <section className="panel scm-impact-card">
+          <div className="scm-impact-card-header">
+            <h4>Operations</h4>
+            <span className={`status-chip tone-${activeJobStatus === "running" ? "check" : activeJobStatus === "failed" ? "failed" : "info"}`}>
+              {activeJobStatus ? activeJobStatus.toUpperCase() : "IDLE"}
+            </span>
+          </div>
+          <div className="scm-impact-grid scm-impact-results-grid">
+            <div className="scm-impact-subcard">
+              <h5>Registry Health</h5>
+              <div className="scm-health-grid">
+                {registryHealthItems.map((item) => (
+                  <div key={item.label} className="scm-health-card">
+                    <div className="hint">{item.label}</div>
+                    <div className={`status-chip tone-${item.ok ? "check" : "warning"}`}>{item.text}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="scm-impact-subcard">
+              <h5>Active Run</h5>
+              {activeJob ? (
+                <div className="list compact">
+                  <div className="list-item"><span className="status-chip tone-info">job</span><span className="list-text text-ellipsis">{activeJob.job_id}</span></div>
+                  <div className="list-item"><span className="status-chip tone-info">stage</span><span className="list-text">{activeJob.stage || "-"}</span></div>
+                  <div className="list-item"><span className="status-chip tone-info">message</span><span className="list-text">{activeJob.message || "-"}</span></div>
+                </div>
+              ) : (
+                <div className="empty">현재 실행 중인 impact job이 없습니다.</div>
+              )}
+            </div>
+          </div>
+        </section>
+      </div>
 
       <section className="panel scm-impact-card">
         <div className="scm-impact-card-header">
-          <h4>Operations</h4>
-          <span className={`status-chip tone-${activeJobStatus === "running" ? "check" : activeJobStatus === "failed" ? "failed" : "info"}`}>
-            {activeJobStatus ? activeJobStatus.toUpperCase() : "IDLE"}
-          </span>
+          <h4>고급 패널</h4>
+          <button type="button" className="btn-outline" onClick={() => setShowAdvancedPanels((prev) => !prev)}>
+            {showAdvancedPanels ? "고급 패널 숨기기" : "고급 패널 보기"}
+          </button>
         </div>
-        <div className="scm-impact-grid scm-impact-results-grid">
-          <div className="scm-impact-subcard">
-            <h5>Registry Health</h5>
-            <div className="list compact">
-              {registryHealthItems.map((item) => (
-                <div key={item.label} className="list-item">
-                  <span className={`status-chip tone-${item.ok ? "check" : "warning"}`}>{item.label}</span>
-                  <span className="list-text">{item.text}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="scm-impact-subcard">
-            <h5>Active Run</h5>
-            {activeJob ? (
-              <div className="list compact">
-                <div className="list-item"><span className="status-chip tone-info">job</span><span className="list-text text-ellipsis">{activeJob.job_id}</span></div>
-                <div className="list-item"><span className="status-chip tone-info">stage</span><span className="list-text">{activeJob.stage || "-"}</span></div>
-                <div className="list-item"><span className="status-chip tone-info">message</span><span className="list-text">{activeJob.message || "-"}</span></div>
-              </div>
-            ) : (
-              <div className="empty">현재 실행 중인 impact job이 없습니다.</div>
-            )}
-          </div>
-        </div>
+        <div className="hint">Registry 편집, SCM 상세 상태, 수동 Impact Trigger는 필요할 때만 열어보면 됩니다.</div>
       </section>
 
+      {showAdvancedPanels ? (
+      <>
       <section className="panel scm-impact-card">
         <div className="scm-impact-card-header">
           <h4>Registry Editor</h4>
@@ -1033,7 +1075,7 @@ const LocalScmPanel = ({
           <input
             value={registryForm.base_ref}
             onChange={(e) => updateRegistryForm("base_ref", e.target.value)}
-            placeholder="SVN working copy면 비워둘 수 있음"
+            placeholder="SVN working copy면 비워둘 수 있습니다"
             disabled={registrySaving}
           />
           <label>Source Root</label>
@@ -1161,7 +1203,7 @@ const LocalScmPanel = ({
             placeholder={"Sources/APP/Ap_BuzzerCtrl_PDS.c\nSources/APP/Ap_BuzzerCtrl_it_PDS.h"}
           />
           <div className="hint">
-            SVN working copy가 깨끗하면 여기서 검증용 changed files를 직접 넣을 수 있습니다.
+            SVN working copy가 깨끗하면 여기에서 검증용 changed files를 직접 넣을 수 있습니다.
           </div>
           <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
             <button type="button" className="btn-outline" disabled={impactLoading || !selectedScmId} onClick={() => triggerImpact(true)}>
@@ -1180,12 +1222,14 @@ const LocalScmPanel = ({
               {impactErrorInfo.detail ? <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{impactErrorInfo.detail}</div> : null}
               <div style={{ marginTop: 4 }} className="hint">
                 {impactErrorInfo.retryable ? "재시도 가능" : "설정 확인 필요"}
-                {impactErrorInfo.code ? ` · code: ${impactErrorInfo.code}` : ""}
+                {impactErrorInfo.code ? ` 쨌 code: ${impactErrorInfo.code}` : ""}
               </div>
             </div>
           ) : null}
         </section>
       </div>
+      </>
+      ) : null}
 
       <section className="panel scm-impact-card">
         <div className="scm-impact-card-header">
@@ -1307,6 +1351,13 @@ const LocalScmPanel = ({
                   </span>
                 </div>
                 <div className="list-item">
+                  <span className="status-chip tone-check">SITS</span>
+                  <span className="list-text">
+                    {currentChangeSummary.sits_test_cases || 0} TCs / {currentChangeSummary.sits_sub_cases || 0} sub-cases
+                    {currentChangeSummary.sits_delta_cases ? ` (Δ${currentChangeSummary.sits_delta_cases > 0 ? "+" : ""}${currentChangeSummary.sits_delta_cases})` : ""}
+                  </span>
+                </div>
+                <div className="list-item">
                   <span className="status-chip tone-warning">STS</span>
                   <span className="list-text">{currentChangeSummary.sts_flagged || 0} flagged</span>
                 </div>
@@ -1341,11 +1392,11 @@ const LocalScmPanel = ({
         ) : null}
       </section>
 
-      {(udsViewLoading || udsViewData || sutsViewLoading || sutsViewData) ? (
+      {(udsViewLoading || udsViewData || sutsViewLoading || sutsViewData || sitsViewLoading || sitsViewData) ? (
         <section className="panel scm-impact-card">
           <div className="scm-impact-card-header">
             <h4>AUTO Result Preview</h4>
-            <span className="hint">{udsViewLoading || sutsViewLoading ? "loading..." : "ready"}</span>
+            <span className="hint">{udsViewLoading || sutsViewLoading || sitsViewLoading ? "loading..." : "ready"}</span>
           </div>
 
           {activeUdsOutputPath ? (
@@ -1443,6 +1494,35 @@ const LocalScmPanel = ({
               )}
             </div>
           ) : null}
+
+          {activeSitsOutputPath ? (
+            <div className="scm-impact-subcard">
+              <div className="scm-impact-card-header">
+                <h5>SITS</h5>
+                <span className="hint">{basename(activeSitsOutputPath)}</span>
+              </div>
+              {sitsViewLoading ? (
+                <div className="empty">SITS preview loading...</div>
+              ) : sitsViewData ? (
+                <ExcelArtifactViewer
+                  artifactType="sits"
+                  title="SITS Generated Result"
+                  viewData={sitsViewData}
+                  previewData={sitsPreviewData}
+                  previewLoading={sitsViewLoading}
+                  previewSheet={sitsPreviewSheet}
+                  onPreviewSheetChange={setSitsPreviewSheet}
+                  onLoadPreview={() => loadSitsView(activeSitsOutputPath)}
+                  files={[]}
+                  filesLoading={false}
+                  onRefreshFiles={() => loadSitsView(activeSitsOutputPath)}
+                  onOpenFile={() => {}}
+                />
+              ) : (
+                <div className="empty">SITS output preview unavailable.</div>
+              )}
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -1460,7 +1540,7 @@ const LocalScmPanel = ({
                     <span className={`status-chip tone-${item.dry_run ? "info" : "success"}`}>{item.dry_run ? "DRY" : "RUN"}</span>
                     <span className="list-text text-ellipsis">{item.run_id}</span>
                     <span className="list-snippet">
-                      UDS {item.summary?.uds_changed_functions || 0} / SUTS {item.summary?.suts_changed_cases || 0}
+                      UDS {item.summary?.uds_changed_functions || 0} / SUTS {item.summary?.suts_changed_cases || 0} / SITS {item.summary?.sits_test_cases || 0}
                     </span>
                     <button
                       type="button"
@@ -1496,6 +1576,12 @@ const LocalScmPanel = ({
                   </span>
                 </div>
                 <div className="list-item">
+                  <span className="status-chip tone-check">SITS</span>
+                  <span className="list-text">
+                    {selectedChangeDetail.summary?.sits_test_cases || 0} TCs / {selectedChangeDetail.summary?.sits_sub_cases || 0} sub-cases
+                  </span>
+                </div>
+                <div className="list-item">
                   <span className="status-chip tone-warning">STS</span>
                   <span className="list-text">{selectedChangeDetail.summary?.sts_flagged || 0} flagged</span>
                 </div>
@@ -1514,10 +1600,10 @@ const LocalScmPanel = ({
                     onClick={() => {
                       const changedFiles = Array.isArray(selectedChangeDetail.changed_files) && selectedChangeDetail.changed_files.length > 0
                         ? selectedChangeDetail.changed_files.map((value) => `- \`${value}\``).join("\n")
-                        : "- none";
+                        : "- 없음";
                       const changedFunctions = Object.entries(selectedChangeDetail.changed_functions || {}).length > 0
                         ? Object.entries(selectedChangeDetail.changed_functions || {}).map(([name, kind]) => `- \`${name}\` : \`${kind}\``).join("\n")
-                        : "- none";
+                        : "- 없음";
                       const md = [
                         "# Document Change Detail",
                         "",
@@ -1540,7 +1626,7 @@ const LocalScmPanel = ({
                 </div>
               </div>
             ) : (
-              <div className="empty">선택한 변경 이력이 없습니다.</div>
+              <div className="empty">선택된 변경 이력이 없습니다.</div>
             )}
           </div>
         </div>
@@ -1602,11 +1688,11 @@ const LocalScmPanel = ({
               <div className="list compact">
                 <div className="list-item">
                   <span className="status-chip tone-warning">STS</span>
-                  <span className="list-text">{selectedReviewReasons.sts.length > 0 ? selectedReviewReasons.sts.join(", ") : "none"}</span>
+                  <span className="list-text">{selectedReviewReasons.sts.length > 0 ? selectedReviewReasons.sts.join(", ") : "없음"}</span>
                 </div>
                 <div className="list-item">
                   <span className="status-chip tone-warning">SDS</span>
-                  <span className="list-text">{selectedReviewReasons.sds.length > 0 ? selectedReviewReasons.sds.join(", ") : "none"}</span>
+                  <span className="list-text">{selectedReviewReasons.sds.length > 0 ? selectedReviewReasons.sds.join(", ") : "없음"}</span>
                 </div>
               </div>
             </div>
@@ -1660,7 +1746,7 @@ const LocalScmPanel = ({
                     <span className="status-chip tone-check">added</span>
                     <span className="list-text text-ellipsis">{item}</span>
                   </div>
-                )) : <div className="empty">추가 파일 없음</div>}
+                  )) : <div className="empty">추가 파일 없음</div>}
                 {runComparison.removedFiles.map((item) => (
                   <div key={`remove-file-${item}`} className="list-item">
                     <span className="status-chip tone-warning">removed</span>
@@ -1709,7 +1795,7 @@ const LocalScmPanel = ({
           {artifactPreview.path ? <span className="hint">{basename(artifactPreview.path)}</span> : null}
         </div>
         {artifactPreviewLoading ? (
-          <div className="empty">리뷰 문서 불러오는 중...</div>
+          <div className="empty">리뷰 문서를 불러오는 중...</div>
         ) : artifactPreview.text ? (
           <>
             <div className="scm-review-toolbar">
@@ -1753,7 +1839,7 @@ const LocalScmPanel = ({
             {artifactPreview.truncated && <div className="hint">미리보기는 일부만 표시됩니다.</div>}
           </>
         ) : (
-          <div className="empty">STS/SDS review artifact가 생성되면 여기서 바로 확인할 수 있습니다.</div>
+          <div className="empty">STS/SDS review artifact가 생성되면 여기에서 바로 확인할 수 있습니다.</div>
         )}
       </section>
 
@@ -1809,3 +1895,4 @@ const LocalScmPanel = ({
 };
 
 export default LocalScmPanel;
+

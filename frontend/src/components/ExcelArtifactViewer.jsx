@@ -26,6 +26,7 @@ export default function ExcelArtifactViewer({
   onOpenFile,
 }) {
   const [reportState, setReportState] = useState({ title: "", path: "", text: "", loading: false, error: "" });
+  const [fullViewerOpen, setFullViewerOpen] = useState(false);
   const openLocalPath = useCallback(async (path) => {
     if (!path) return;
     try {
@@ -76,6 +77,37 @@ export default function ExcelArtifactViewer({
     const sheets = Array.isArray(previewData?.sheets) ? previewData.sheets : [];
     return sheets[previewSheet] || null;
   }, [previewData, previewSheet]);
+  const previewIsTruncated = !!(activeSheet && Number(activeSheet.total_rows || 0) > (Array.isArray(activeSheet.rows) ? activeSheet.rows.length : 0));
+  const openFullViewer = useCallback(async (filename) => {
+    if (!filename || typeof onLoadPreview !== "function") return;
+    await onLoadPreview(filename, { maxRows: 200000 });
+    setFullViewerOpen(true);
+  }, [onLoadPreview]);
+
+  const previewTable = activeSheet ? (
+    <div style={{ overflowX: "auto", maxHeight: fullViewerOpen ? "calc(100vh - 220px)" : 420, overflowY: "auto", border: "1px solid var(--border, #444)", borderRadius: 6 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: fullViewerOpen ? "0.88rem" : "0.8rem", whiteSpace: "nowrap" }}>
+        <thead>
+          <tr style={{ position: "sticky", top: 0, background: "var(--bg-alt, #1e1e2e)", zIndex: 1 }}>
+            <th style={{ padding: "6px 8px", textAlign: "left" }}>#</th>
+            {activeSheet.headers.map((header, idx) => (
+              <th key={idx} style={{ padding: "6px 8px", textAlign: "left" }}>{header}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {activeSheet.rows.map((row, rowIdx) => (
+            <tr key={rowIdx}>
+              <td style={{ padding: "4px 8px" }}>{rowIdx + 1}</td>
+              {row.map((cell, cellIdx) => (
+                <td key={cellIdx} style={{ padding: "4px 8px", maxWidth: fullViewerOpen ? 520 : 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: fullViewerOpen ? "pre-wrap" : "nowrap" }}>{String(cell ?? "")}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  ) : null;
 
   return (
     <div className="panel">
@@ -129,6 +161,11 @@ export default function ExcelArtifactViewer({
                 {previewLoading ? "Loading preview..." : "Preview"}
               </button>
             ) : null}
+            {typeof onLoadPreview === "function" && viewData.filename ? (
+              <button type="button" className="btn-outline" onClick={() => openFullViewer(viewData.filename)} disabled={previewLoading}>
+                {previewLoading ? "Loading full viewer..." : "Open Full Viewer"}
+              </button>
+            ) : null}
             {viewData.validation_report_path ? (
               <button type="button" className="btn-outline" onClick={() => loadReport(viewData.validation_report_path, "Validation Report")}>
                 View Validation
@@ -161,6 +198,12 @@ export default function ExcelArtifactViewer({
             <h5 style={{ margin: 0 }}>Preview</h5>
             <span className="hint">{previewData.filename}</span>
           </div>
+          {activeSheet ? (
+            <div className="hint" style={{ marginTop: 6 }}>
+              Sheet {previewSheet + 1} · rows {Array.isArray(activeSheet.rows) ? activeSheet.rows.length : 0} / {activeSheet.total_rows || 0}
+              {previewIsTruncated ? " · preview truncated" : ""}
+            </div>
+          ) : null}
           {Array.isArray(previewData.sheet_names) && previewData.sheet_names.length > 1 ? (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
               {previewData.sheet_names.map((name, idx) => (
@@ -175,30 +218,7 @@ export default function ExcelArtifactViewer({
               ))}
             </div>
           ) : null}
-          {activeSheet ? (
-            <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto", border: "1px solid var(--border, #444)", borderRadius: 6 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem", whiteSpace: "nowrap" }}>
-                <thead>
-                  <tr style={{ position: "sticky", top: 0, background: "var(--bg-alt, #1e1e2e)" }}>
-                    <th style={{ padding: "6px 8px", textAlign: "left" }}>#</th>
-                    {activeSheet.headers.map((header, idx) => (
-                      <th key={idx} style={{ padding: "6px 8px", textAlign: "left" }}>{header}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {activeSheet.rows.map((row, rowIdx) => (
-                    <tr key={rowIdx}>
-                      <td style={{ padding: "4px 8px" }}>{rowIdx + 1}</td>
-                      {row.map((cell, cellIdx) => (
-                        <td key={cellIdx} style={{ padding: "4px 8px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>{String(cell ?? "")}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
+          {previewTable}
         </div>
       ) : null}
 
@@ -262,6 +282,49 @@ export default function ExcelArtifactViewer({
           <summary>Raw payload</summary>
           <pre className="json">{JSON.stringify(viewData, null, 2)}</pre>
         </details>
+      ) : null}
+
+      {fullViewerOpen && previewData ? (
+        <div style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,0.72)", padding: 24 }}>
+          <div className="card" style={{ width: "100%", height: "100%", padding: 16, display: "grid", gridTemplateRows: "auto auto 1fr", gap: 12 }}>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <strong>{title} Full Web Viewer</strong>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                {typeof onLoadPreview === "function" && viewData?.filename ? (
+                  <button type="button" className="btn-outline" onClick={() => onLoadPreview(viewData.filename, { maxRows: 200000 })} disabled={previewLoading}>
+                    {previewLoading ? "Reloading..." : "Reload Full"}
+                  </button>
+                ) : null}
+                <button type="button" className="btn-outline" onClick={() => setFullViewerOpen(false)}>
+                  Close
+                </button>
+              </div>
+            </div>
+            <div>
+              <div className="hint">{previewData.filename}</div>
+              {activeSheet ? (
+                <div className="hint" style={{ marginTop: 4 }}>
+                  Sheet {previewSheet + 1} · rows {Array.isArray(activeSheet.rows) ? activeSheet.rows.length : 0} / {activeSheet.total_rows || 0}
+                </div>
+              ) : null}
+              {Array.isArray(previewData.sheet_names) && previewData.sheet_names.length > 1 ? (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                  {previewData.sheet_names.map((name, idx) => (
+                    <button
+                      key={`full-${name}`}
+                      type="button"
+                      className={previewSheet === idx ? "" : "btn-outline"}
+                      onClick={() => onPreviewSheetChange(idx)}
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            {previewTable}
+          </div>
+        </div>
       ) : null}
     </div>
   );

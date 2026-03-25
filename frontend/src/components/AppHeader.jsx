@@ -1,4 +1,4 @@
-import StatusPill from './StatusPill'
+import StatusPill from "./StatusPill";
 
 const AppHeader = ({
   title,
@@ -30,25 +30,31 @@ const AppHeader = ({
       <div className="app-sub">{subtitle}</div>
     </div>
     <div className="app-header-meta">
-      <StatusPill tone={statusTone}>{status?.state || (loading ? 'RUNNING' : 'READY')}</StatusPill>
-      {mode === 'local' ? <StatusPill tone="neutral">{sessionLabel}</StatusPill> : null}
+      <StatusPill tone={statusTone}>
+        {status?.state || (loading ? "RUNNING" : "READY")}
+      </StatusPill>
+      {mode === "local" ? <StatusPill tone="neutral">{sessionLabel}</StatusPill> : null}
     </div>
     <div className="app-actions">
-      {mode === 'local' && (
+      {mode === "local" && (
         <>
-          <button onClick={onRefreshSession} disabled={!sessionId} aria-label="데이터 새로고침">
-            데이터 새로고침
+          <button onClick={onRefreshSession} disabled={!sessionId} aria-label="세션 새로고침">
+            세션 새로고침
           </button>
           <button onClick={onRefreshLogs} disabled={!sessionId} aria-label="로그 새로고침">
             로그 새로고침
           </button>
         </>
       )}
-      <button className="theme-toggle" onClick={onToggleTheme} aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}>
-        {theme === 'dark' ? '라이트 모드' : '다크 모드'}
+      <button
+        className="theme-toggle"
+        onClick={onToggleTheme}
+        aria-label={theme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환"}
+      >
+        {theme === "dark" ? "라이트 모드" : "다크 모드"}
       </button>
     </div>
   </header>
-)
+);
 
-export default AppHeader
+export default AppHeader;

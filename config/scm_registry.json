@@ -17,9 +17,10 @@
       "ignore_patterns": [],
       "webhook_secret_env": "",
       "linked_docs": {
-        "uds": "D:\\Project\\devops\\260105\\backend\\reports\\uds_local\\uds_spec_generated_expanded_20260324_162349.docx",
+        "uds": "D:\\Project\\devops\\260105\\backend\\reports\\uds_local\\uds_spec_generated_expanded_20260325_041213.docx",
         "sts": "D:\\Project\\devops\\260105\\reports\\sts\\sts_eval_20260319_123007.xlsx",
         "suts": "D:\\Project\\devops\\260105\\reports\\suts\\suts_impact_20260324_111833.xlsm",
+        "sits": "",
         "srs": "D:\\Project\\devops\\260105\\docs\\(HDPDM01_SRS) Software Requirements Specification_v1.05_20230510.docx",
         "sds": "D:\\Project\\devops\\260105\\docs\\(HDPDM01_SDS) Software Architecture Design Specification_v1.04_20230512.docx",
         "hsis": "D:\\Project\\devops\\260105\\docs\\(HDPDM01_HSIS) Hardware Software Interface Specification_v5.00_20221115_B.xlsx"

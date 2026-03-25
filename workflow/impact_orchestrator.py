@@ -19,15 +19,16 @@ from workflow.impact_changes import build_change_log, write_change_log
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-AUTO_DOCS = {"uds", "suts"}
+AUTO_DOCS = {"uds", "suts", "sits"}
 FLAG_DOCS = {"sts", "sds"}
 ACTION_MATRIX: Dict[str, Dict[str, str]] = {
-    "SIGNATURE": {"uds": "AUTO", "suts": "AUTO", "sts": "FLAG", "sds": "FLAG"},
-    "BODY": {"uds": "AUTO", "suts": "AUTO", "sts": "FLAG", "sds": "-"},
-    "NEW": {"uds": "AUTO", "suts": "AUTO", "sts": "FLAG", "sds": "FLAG"},
-    "DELETE": {"uds": "AUTO", "suts": "AUTO", "sts": "FLAG", "sds": "FLAG"},
-    "VARIABLE": {"uds": "AUTO", "suts": "AUTO", "sts": "FLAG", "sds": "-"},
-    "HEADER": {"uds": "AUTO", "suts": "FLAG", "sts": "FLAG", "sds": "FLAG"},
+    # sits: cross-module integration — AUTO on any functional change, FLAG on header-only
+    "SIGNATURE": {"uds": "AUTO", "suts": "AUTO", "sits": "AUTO", "sts": "FLAG", "sds": "FLAG"},
+    "BODY":      {"uds": "AUTO", "suts": "AUTO", "sits": "AUTO", "sts": "FLAG", "sds": "-"},
+    "NEW":       {"uds": "AUTO", "suts": "AUTO", "sits": "AUTO", "sts": "FLAG", "sds": "FLAG"},
+    "DELETE":    {"uds": "AUTO", "suts": "AUTO", "sits": "AUTO", "sts": "FLAG", "sds": "FLAG"},
+    "VARIABLE":  {"uds": "AUTO", "suts": "AUTO", "sits": "AUTO", "sts": "FLAG", "sds": "-"},
+    "HEADER":    {"uds": "AUTO", "suts": "FLAG", "sits": "FLAG", "sts": "FLAG", "sds": "FLAG"},
 }
 
 
@@ -269,11 +270,59 @@ def _run_suts_generation(entry: Any, target_functions: List[str] | None = None) 
     }
 
 
+def _run_sits_generation(entry: Any) -> Dict[str, Any]:
+    """Regenerate SITS for the given registry entry.
+
+    Unlike SUTS (which can be scoped to specific functions), SITS always
+    regenerates the full integration test spec because cross-module call
+    flows span the entire codebase.
+    """
+    from sits_generator import generate_sits
+
+    source_root = str(entry.source_root or "").strip()
+    if not source_root:
+        raise RuntimeError("SITS regeneration requires source_root")
+    out_dir = REPO_ROOT / "reports" / "sits"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"sits_impact_{_ts()}.xlsm"
+    template_path = _resolve_existing(entry.linked_docs.sits) or _discover_doc("sits", {".xlsm", ".xlsx"})
+    srs_path = _resolve_existing(entry.linked_docs.srs) or _discover_doc("srs", {".docx"})
+    sds_path = _resolve_existing(entry.linked_docs.sds) or _discover_doc("sds", {".docx"})
+    uds_path = _resolve_existing(entry.linked_docs.uds)
+    hsis_path = _resolve_existing(entry.linked_docs.hsis) or _discover_doc("hsis", {".xlsx", ".xlsm"})
+    stp_path = _discover_doc("stp", {".docx", ".pdf", ".txt"})
+
+    result = generate_sits(
+        source_root=source_root,
+        output_path=str(out_path),
+        template_path=template_path,
+        project_config={
+            "project_id": str(entry.id or "PROJECT").upper(),
+            "doc_id": f"{str(entry.id or 'PROJECT').upper()}-SITS",
+            "version": "impact",
+            "asil_level": "",
+        },
+        srs_docx_path=srs_path,
+        sds_docx_path=sds_path,
+        uds_path=uds_path,
+        hsis_path=hsis_path,
+        stp_path=stp_path,
+    )
+    return {
+        "output_path": str(out_path),
+        "test_case_count": result.get("test_case_count", 0),
+        "total_sub_cases": result.get("total_sub_cases", 0),
+        "validation_report_path": result.get("validation_report_path", ""),
+    }
+
+
 def _execute_auto_action(target: str, trigger: ChangeTrigger, entry: Any, target_functions: List[str] | None = None) -> Dict[str, Any]:
     if target == "uds":
         return _run_uds_generation(trigger)
     if target == "suts":
         return _run_suts_generation(entry, target_functions)
+    if target == "sits":
+        return _run_sits_generation(entry)
     raise RuntimeError(f"unsupported AUTO target: {target}")
 
 
@@ -355,7 +404,7 @@ def _hop_limited_impact(
 
 def _selected_targets(targets: Iterable[str] | None) -> List[str]:
     values = [str(x or "").strip().lower() for x in (targets or []) if str(x or "").strip()]
-    return sorted(dict.fromkeys(values)) if values else ["sds", "sts", "suts", "uds"]
+    return sorted(dict.fromkeys(values)) if values else ["sds", "sits", "sts", "suts", "uds"]
 
 
 def _fallback_changed_types_from_files(changed_files: List[str]) -> Dict[str, str]:

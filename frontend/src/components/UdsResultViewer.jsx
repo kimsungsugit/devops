@@ -7,6 +7,15 @@ const TRACE_PAGE_SIZE = 200;
 
 const toText = (v) => (v === null || v === undefined ? "" : String(v));
 const toList = (v) => (Array.isArray(v) ? v : []);
+const toDisplayList = (v) => {
+  if (Array.isArray(v)) return v.map((item) => toText(item).trim()).filter(Boolean);
+  const raw = toText(v).trim();
+  if (!raw) return [];
+  return raw
+    .split(/\r?\n|,\s*/)
+    .map((item) => toText(item).trim())
+    .filter(Boolean);
+};
 const toSwCom = (fn) => {
   const raw = toText(fn?.swcom || "").trim();
   if (raw) return raw;
@@ -283,6 +292,24 @@ const UdsResultViewer = ({
   const [depMapView, setDepMapView] = useState("graph");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [traceBatch, setTraceBatch] = useState(200);
+
+  const renderStructuredValues = (values, emptyText = "N/A") => {
+    const rows = toDisplayList(values);
+    if (rows.length === 0) return emptyText;
+    return (
+      <div style={{ display: "grid", gap: 6 }}>
+        {rows.map((value, idx) => (
+          <div
+            key={`${value}-${idx}`}
+            className="card"
+            style={{ padding: "8px 10px", whiteSpace: "normal", overflowWrap: "anywhere" }}
+          >
+            {value}
+          </div>
+        ))}
+      </div>
+    );
+  };
 
   const pushAdvancedLog = (text) => {
     const line = `[${new Date().toLocaleTimeString()}] ${toText(text)}`;
@@ -1442,27 +1469,31 @@ const UdsResultViewer = ({
                     </div>
                     <div className="detail-row compact">
                       <span className="detail-label">Prototype</span>
-                      <span className="detail-value">{toText(selectedFn.prototype) || "-"}</span>
+                      <span className="detail-value" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>
+                        {toText(selectedFn.prototype) || "-"}
+                      </span>
                     </div>
                     <div className="detail-row compact">
                       <span className="detail-label">Description</span>
-                      <span className="detail-value">{toText(selectedFn.description) || "-"}</span>
+                      <span className="detail-value" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                        {toText(selectedFn.description) || "-"}
+                      </span>
                     </div>
                     <div className="detail-row compact">
                       <span className="detail-label">Input</span>
-                      <span className="detail-value">{toList(selectedFn.inputs).join(", ") || "N/A"}</span>
+                      <span className="detail-value">{renderStructuredValues(selectedFn.inputs)}</span>
                     </div>
                     <div className="detail-row compact">
                       <span className="detail-label">Output</span>
-                      <span className="detail-value">{toList(selectedFn.outputs).join(", ") || "N/A"}</span>
+                      <span className="detail-value">{renderStructuredValues(selectedFn.outputs)}</span>
                     </div>
                     <div className="detail-row compact">
                       <span className="detail-label">Global</span>
-                      <span className="detail-value">{toList(selectedFn.globals_global).join(", ") || "N/A"}</span>
+                      <span className="detail-value">{renderStructuredValues(selectedFn.globals_global)}</span>
                     </div>
                     <div className="detail-row compact">
                       <span className="detail-label">Static</span>
-                      <span className="detail-value">{toList(selectedFn.globals_static).join(", ") || "N/A"}</span>
+                      <span className="detail-value">{renderStructuredValues(selectedFn.globals_static)}</span>
                     </div>
                     <div className="detail-row compact">
                       <span className="detail-label">Called</span>

@@ -193,6 +193,20 @@ def _build_excel_artifact_summary(artifact_type: str, result: Optional[Dict[str,
             {"key": "total_output_vars", "label": "Output Vars", "value": int(quality.get("total_output_vars") or 0)},
             {"key": "elapsed_seconds", "label": "Elapsed", "value": float(payload.get("elapsed_seconds") or 0), "unit": "s"},
         ]
+    elif kind == "sits":
+        tc_count = int(payload.get("test_case_count") or 0)
+        sub_count = int(payload.get("total_sub_cases") or 0)
+        avg_sub = round(sub_count / tc_count, 1) if tc_count else 0.0
+        primary = [
+            {"key": "test_case_count", "label": "Test Cases", "value": tc_count},
+            {"key": "total_sub_cases", "label": "Sub-cases", "value": sub_count},
+            {"key": "avg_sub_per_tc", "label": "Avg Sub/TC", "value": avg_sub},
+        ]
+        secondary = [
+            {"key": "flow_count", "label": "Flows", "value": int(payload.get("flow_count") or 0)},
+            {"key": "covered_reqs", "label": "Covered Reqs", "value": int(trace.get("covered_reqs") or 0)},
+            {"key": "elapsed_seconds", "label": "Elapsed", "value": float(payload.get("elapsed_seconds") or 0), "unit": "s"},
+        ]
     return {
         "artifact_type": kind,
         "ok": bool(payload.get("ok", True)),

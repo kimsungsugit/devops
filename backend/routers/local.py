@@ -36,10 +36,11 @@ from backend.schemas import (
     ReplaceTextRequest,
     ScmRequest,
     SearchRequest,
+    SdsViewRequest,
     TextPreviewRequest,
 )
 from datetime import datetime
-from backend.helpers import _apply_uds_view_filters, _augment_path, _build_excel_artifact_payload, _build_excel_artifact_summary, _build_preflight, _build_quality_evaluation, _collect_tool_paths, _compute_quick_quality_gate, _compute_uds_mapping_summary, _enrich_function_quality_fields, _generate_docx_with_retry, _get_progress, _get_source_sections_cached, _get_uds_view_payload_cached, _is_allowed_req_doc, _local_reports_dir, _local_sts_dir, _local_suts_dir, _local_uds_dir, _open_local_path, _parse_component_map_file, _parse_path_list, _read_excel_artifact_sidecar, _resolve_local_report_path, _resolve_local_sts_path, _resolve_local_suts_path, _resolve_local_uds_path, _resolve_report_dir, _resolve_source_root_from_cfg, _run_impact_analysis_for_uds, _run_report_with_timeout, _set_progress, _validate_docx_template_bytes, _write_excel_artifact_sidecar, _write_residual_tbd_report, _write_upload_to_temp
+from backend.helpers import _apply_uds_view_filters, _augment_path, _build_excel_artifact_payload, _build_excel_artifact_summary, _build_preflight, _build_quality_evaluation, _collect_tool_paths, _compute_quick_quality_gate, _compute_uds_mapping_summary, _enrich_function_quality_fields, _generate_docx_with_retry, _get_progress, _get_source_sections_cached, _get_uds_view_payload_cached, _is_allowed_req_doc, _local_reports_dir, _local_sits_dir, _local_sts_dir, _local_suts_dir, _local_uds_dir, _open_local_path, _parse_component_map_file, _parse_path_list, _read_excel_artifact_sidecar, _resolve_local_report_path, _resolve_local_sits_path, _resolve_local_sts_path, _resolve_local_suts_path, _resolve_local_uds_path, _resolve_report_dir, _resolve_source_root_from_cfg, _run_impact_analysis_for_uds, _run_report_with_timeout, _set_progress, _validate_docx_template_bytes, _write_excel_artifact_sidecar, _write_residual_tbd_report, _write_upload_to_temp
 from report_generator import (
     _build_req_map_from_doc_paths,
     enrich_function_details_with_docs,
@@ -80,6 +81,7 @@ from backend.services.local_service import (
     search_in_files,
     write_file_text,
 )
+from backend.helpers.sds import build_sds_view_model
 from workflow.change_trigger import build_registry_trigger
 from workflow.impact_orchestrator import run_impact_update
 from workflow.impact_jobs import start_impact_job
@@ -117,7 +119,12 @@ def _pick_excel_suffix(template_path: Optional[str]) -> str:
 
 
 def _build_local_excel_output(base_dir: Path, category: str, stem: str, template_path: Optional[str]) -> Tuple[str, Path]:
-    target_dir = _local_sts_dir(base_dir) if category == "sts" else _local_suts_dir(base_dir)
+    if category == "sts":
+        target_dir = _local_sts_dir(base_dir)
+    elif category == "sits":
+        target_dir = _local_sits_dir(base_dir)
+    else:
+        target_dir = _local_suts_dir(base_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = _pick_excel_suffix(template_path)
@@ -455,6 +462,14 @@ def _repair_excel_artifact_payload(
             result["quality_report"] = {
                 "avg_sequences_per_tc": float(stats.get("avg_seq_per_tc") or 0),
             }
+        elif kind == "sits":
+            from generators.sits import validate_sits_xlsm
+            validation = validate_sits_xlsm(str(file_path))
+            stats = validation.get("stats", {}) if isinstance(validation, dict) else {}
+            result["validation"] = validation
+            result["test_case_count"] = int(stats.get("tc_count") or 0)
+            result["total_sub_cases"] = int(stats.get("sub_case_count") or 0)
+            result["flow_count"] = int(stats.get("flow_count") or 0)
     except Exception:
         result.setdefault("validation", {})
     payload = _build_excel_artifact_payload(
@@ -856,8 +871,8 @@ async def local_uds_generate(
         )
     _write_uds_payload_sidecar(out_path, uds_payload)
     residual_tbd_path = _write_residual_tbd_report(out_path, (uds_payload.get("summary") or {}).get("mapping") or {})
-    report_timeout_short = 1200 if bool(test_mode) else 300
-    report_timeout_long = 3600 if bool(test_mode) else 600
+    report_timeout_short = 3600 if bool(test_mode) else 300
+    report_timeout_long = 14400 if bool(test_mode) else 600
     if bool(doc_only):
         quality_evaluation = _build_quality_evaluation(
             quick_quality_gate,
@@ -1200,7 +1215,7 @@ async def local_uds_generate_async(
                 {"stage": "reports", "percent": 80, "message": "리포트 생성 중"},
                 job_id=job_id,
             )
-            report_timeout = 1200 if bool(test_mode) else 300
+            report_timeout = 3600 if bool(test_mode) else 300
             quick_qg = _compute_quick_quality_gate(uds_payload)
             if not bool(doc_only):
                 _run_report_with_timeout(
@@ -2698,6 +2713,417 @@ def local_suts_view(filename: str, report_dir: Optional[str] = None) -> Dict[str
     )
 
 
+@router.post("/api/local/sits/generate")
+async def local_sits_generate(
+    request: Request,
+    source_root: str = Form(""),
+    template_path: str = Form(""),
+    project_id: str = Form(""),
+    version: str = Form("v1.00"),
+    asil_level: str = Form(""),
+    max_subcases: int = Form(7),
+    report_dir: str = Form(""),
+    srs_path: str = Form(""),
+    sds_path: str = Form(""),
+    uds_path: str = Form(""),
+    hsis_path: str = Form(""),
+    stp_path: str = Form(""),
+) -> Dict[str, Any]:
+    """Generate SITS (Software Integration Test Specification) Excel from source code."""
+    from sits_generator import generate_sits
+
+    req_id = (request.headers.get("x-req-id") or "").strip() or f"sits-gen-{int(time.time() * 1000)}"
+    print(f"[SITS_GENERATE][{req_id}] start source_root={source_root}", flush=True)
+
+    source_root_path = Path(source_root).resolve() if source_root else None
+    if not source_root_path or not source_root_path.exists() or not source_root_path.is_dir():
+        raise HTTPException(status_code=400, detail="유효한 소스 코드 루트 경로를 제공해주세요.")
+
+    tpl_path: Optional[str] = None
+    if template_path:
+        p = Path(template_path).expanduser().resolve()
+        if p.exists() and p.is_file():
+            tpl_path = str(p)
+
+    def _resolve_doc_path_sits(val: str) -> Optional[str]:
+        if not val:
+            return None
+        p2 = Path(val).expanduser().resolve()
+        return str(p2) if p2.exists() and p2.is_file() else None
+
+    srs_docx = _resolve_doc_path_sits(srs_path)
+    sds_docx = _resolve_doc_path_sits(sds_path)
+    uds_file = _resolve_doc_path_sits(uds_path)
+    hsis_file = _resolve_doc_path_sits(hsis_path) or _discover_hsis_path()
+    stp_file = _resolve_doc_path_sits(stp_path)
+
+    base_dir = _resolve_report_dir(report_dir)
+    out_filename, out_path = _build_local_excel_output(base_dir, "sits", "sits_local", tpl_path)
+
+    project_config = {
+        "project_id": project_id or "PROJECT",
+        "doc_id": f"{project_id or 'PROJECT'}-SITS",
+        "version": version,
+        "asil_level": asil_level,
+    }
+
+    try:
+        result = generate_sits(
+            source_root=str(source_root_path),
+            output_path=str(out_path),
+            template_path=tpl_path,
+            project_config=project_config,
+            max_subcases=max_subcases,
+            srs_docx_path=srs_docx,
+            sds_docx_path=sds_docx,
+            uds_path=uds_file,
+            hsis_path=hsis_file,
+            stp_path=stp_file,
+            ai_config=_load_sts_ai_config(),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"SITS 생성 실패: {e}")
+
+    download_url = f"/api/local/sits/download/{out_filename}"
+    print(f"[SITS_GENERATE][{req_id}] done tc={result.get('test_case_count')} file={out_path}", flush=True)
+
+    payload = _build_excel_artifact_payload(
+        "sits",
+        {
+            "ok": True,
+            "output_path": str(out_path),
+            "filename": out_filename,
+            "download_url": download_url,
+            "test_case_count": result.get("test_case_count", 0),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+            "quality_report": result.get("quality_report", {}),
+            "validation": result.get("validation", {}),
+            "validation_report_path": result.get("validation_report_path", ""),
+        },
+        output_path=str(out_path),
+        filename=out_filename,
+        download_url=download_url,
+        preview_url=f"/api/local/sits/preview/{out_filename}",
+    )
+    _write_excel_artifact_sidecar(out_path, "sits", payload)
+    return payload
+
+
+@router.post("/api/local/sits/generate-stream")
+async def local_sits_generate_stream(
+    request: Request,
+    source_root: str = Form(""),
+    template_path: str = Form(""),
+    project_id: str = Form(""),
+    version: str = Form("v1.00"),
+    asil_level: str = Form(""),
+    max_subcases: int = Form(7),
+    report_dir: str = Form(""),
+    srs_path: str = Form(""),
+    sds_path: str = Form(""),
+    uds_path: str = Form(""),
+    hsis_path: str = Form(""),
+    stp_path: str = Form(""),
+):
+    """Generate SITS with SSE progress streaming."""
+    import json as _json
+    import queue
+    import threading
+
+    from sits_generator import generate_sits
+
+    source_root_path = Path(source_root).resolve() if source_root else None
+    if not source_root_path or not source_root_path.exists() or not source_root_path.is_dir():
+        raise HTTPException(status_code=400, detail="유효한 소스 코드 루트 경로를 제공해주세요.")
+
+    tpl_path: Optional[str] = None
+    if template_path:
+        p = Path(template_path).expanduser().resolve()
+        if p.exists() and p.is_file():
+            tpl_path = str(p)
+
+    def _res_doc_sits(val: str) -> Optional[str]:
+        if not val:
+            return None
+        p2 = Path(val).expanduser().resolve()
+        return str(p2) if p2.exists() and p2.is_file() else None
+
+    srs_docx_stream = _res_doc_sits(srs_path)
+    sds_docx_stream = _res_doc_sits(sds_path)
+    uds_file_stream = _res_doc_sits(uds_path)
+    hsis_stream = _res_doc_sits(hsis_path) or _discover_hsis_path()
+    stp_stream = _res_doc_sits(stp_path)
+
+    base_dir = _resolve_report_dir(report_dir)
+    out_filename, out_path = _build_local_excel_output(base_dir, "sits", "sits_local", tpl_path)
+
+    project_config = {
+        "project_id": project_id or "PROJECT",
+        "doc_id": f"{project_id or 'PROJECT'}-SITS",
+        "version": version,
+        "asil_level": asil_level,
+    }
+
+    progress_queue: queue.Queue = queue.Queue()
+
+    def _on_progress(pct: int, msg: str):
+        progress_queue.put({"type": "progress", "pct": pct, "message": msg})
+
+    def _run():
+        try:
+            result = generate_sits(
+                source_root=str(source_root_path),
+                output_path=str(out_path),
+                template_path=tpl_path,
+                project_config=project_config,
+                max_subcases=max_subcases,
+                on_progress=_on_progress,
+                srs_docx_path=srs_docx_stream,
+                sds_docx_path=sds_docx_stream,
+                uds_path=uds_file_stream,
+                hsis_path=hsis_stream,
+                stp_path=stp_stream,
+                ai_config=_load_sts_ai_config(),
+            )
+            download_url = f"/api/local/sits/download/{out_filename}"
+            payload = _build_excel_artifact_payload(
+                "sits",
+                {
+                    "ok": True,
+                    "output_path": str(out_path),
+                    "filename": out_filename,
+                    "download_url": download_url,
+                    "test_case_count": result.get("test_case_count", 0),
+                    "elapsed_seconds": result.get("elapsed_seconds", 0),
+                    "quality_report": result.get("quality_report", {}),
+                    "validation": result.get("validation", {}),
+                    "validation_report_path": result.get("validation_report_path", ""),
+                },
+                output_path=str(out_path),
+                filename=out_filename,
+                download_url=download_url,
+                preview_url=f"/api/local/sits/preview/{out_filename}",
+            )
+            _write_excel_artifact_sidecar(out_path, "sits", payload)
+            progress_queue.put({"type": "done", **payload})
+        except Exception as e:
+            progress_queue.put({"type": "error", "detail": str(e)})
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _event_stream():
+        while True:
+            try:
+                item = progress_queue.get(timeout=120)
+            except queue.Empty:
+                yield "data: {\"type\":\"keepalive\"}\n\n"
+                continue
+            yield f"data: {_json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("done", "error"):
+                break
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+
+@router.post("/api/local/sits/generate-async")
+async def local_sits_generate_async(
+    request: Request,
+    source_root: str = Form(""),
+    template_path: str = Form(""),
+    project_id: str = Form(""),
+    version: str = Form("v1.00"),
+    asil_level: str = Form(""),
+    max_subcases: int = Form(7),
+    report_dir: str = Form(""),
+    srs_path: str = Form(""),
+    sds_path: str = Form(""),
+    uds_path: str = Form(""),
+    hsis_path: str = Form(""),
+    stp_path: str = Form(""),
+) -> Dict[str, Any]:
+    """Non-blocking SITS generation. Returns job_id for progress polling."""
+    from sits_generator import generate_sits
+
+    source_root_path = Path(source_root).resolve() if source_root else None
+    if not source_root_path or not source_root_path.exists() or not source_root_path.is_dir():
+        raise HTTPException(status_code=400, detail="유효한 소스 코드 루트 경로를 제공해주세요.")
+
+    job_id = uuid.uuid4().hex
+    _set_progress(
+        "local_sits", "local", "local",
+        {"stage": "start", "percent": 1, "message": "SITS 생성 준비 중", "done": False, "error": ""},
+        job_id=job_id,
+    )
+
+    tpl_path: Optional[str] = None
+    if template_path:
+        p = Path(template_path).expanduser().resolve()
+        if p.exists() and p.is_file():
+            tpl_path = str(p)
+
+    def _res_async_sits(val: str) -> Optional[str]:
+        if not val:
+            return None
+        p2 = Path(val).expanduser().resolve()
+        return str(p2) if p2.exists() and p2.is_file() else None
+
+    srs_docx_async = _res_async_sits(srs_path)
+    sds_docx_async = _res_async_sits(sds_path)
+    uds_file_async = _res_async_sits(uds_path)
+    hsis_async = _res_async_sits(hsis_path) or _discover_hsis_path()
+    stp_async = _res_async_sits(stp_path)
+
+    base_dir = _resolve_report_dir(report_dir)
+    out_filename, out_path = _build_local_excel_output(base_dir, "sits", "sits_local", tpl_path)
+
+    project_config = {
+        "project_id": project_id or "PROJECT",
+        "doc_id": f"{project_id or 'PROJECT'}-SITS",
+        "version": version,
+        "asil_level": asil_level,
+    }
+
+    def _sits_on_progress(pct: int, msg: str):
+        stage = "source_analysis" if pct < 30 else "generation"
+        _set_progress(
+            "local_sits", "local", "local",
+            {"stage": stage, "percent": max(10, min(pct, 95)), "message": msg},
+            job_id=job_id,
+        )
+
+    def _worker():
+        try:
+            _set_progress(
+                "local_sits", "local", "local",
+                {"stage": "source_analysis", "percent": 5, "message": "소스 코드 분석 시작"},
+                job_id=job_id,
+            )
+            _logger.info("[SITS_ASYNC][%s] calling generate_sits ...", job_id)
+            result = generate_sits(
+                source_root=str(source_root_path),
+                output_path=str(out_path),
+                template_path=tpl_path,
+                project_config=project_config,
+                max_subcases=max_subcases,
+                on_progress=_sits_on_progress,
+                srs_docx_path=srs_docx_async,
+                sds_docx_path=sds_docx_async,
+                uds_path=uds_file_async,
+                hsis_path=hsis_async,
+                stp_path=stp_async,
+                ai_config=_load_sts_ai_config(),
+            )
+            _logger.info("[SITS_ASYNC][%s] generate_sits returned, setting done", job_id)
+
+            download_url = f"/api/local/sits/download/{out_filename}"
+            result_payload = _build_excel_artifact_payload(
+                "sits",
+                {
+                    "ok": True,
+                    "output_path": str(out_path),
+                    "filename": out_filename,
+                    "download_url": download_url,
+                    "test_case_count": result.get("test_case_count", 0),
+                    "elapsed_seconds": result.get("elapsed_seconds", 0),
+                    "quality_report": result.get("quality_report", {}),
+                    "validation": result.get("validation", {}),
+                    "validation_report_path": result.get("validation_report_path", ""),
+                },
+                output_path=str(out_path),
+                filename=out_filename,
+                download_url=download_url,
+                preview_url=f"/api/local/sits/preview/{out_filename}",
+            )
+            _write_excel_artifact_sidecar(out_path, "sits", result_payload)
+            _set_progress(
+                "local_sits", "local", "local",
+                {
+                    "stage": "done", "percent": 100, "message": "완료",
+                    "done": True, "error": "",
+                    "result": result_payload,
+                },
+                job_id=job_id,
+            )
+            _logger.info("[SITS_ASYNC][%s] done file=%s tc=%s", job_id, out_filename, result.get("test_case_count"))
+
+        except Exception as exc:
+            tb = traceback.format_exc()
+            _logger.error("[SITS_ASYNC][%s] FAILED: %s\n%s", job_id, str(exc)[:500], tb)
+            _set_progress(
+                "local_sits", "local", "local",
+                {"stage": "error", "percent": 100, "message": f"실패: {str(exc)[:300]}", "done": True, "error": str(exc)[:500]},
+                job_id=job_id,
+            )
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"ok": True, "job_id": job_id}
+
+
+@router.get("/api/local/sits/progress")
+def local_sits_progress(job_id: str = "") -> Dict[str, Any]:
+    data = _get_progress("local_sits", "local", "local", job_id)
+    return {"ok": bool(data), "progress": data}
+
+
+@router.get("/api/local/sits/download/{filename}")
+def local_sits_download(filename: str, report_dir: Optional[str] = None) -> FileResponse:
+    file_path = _resolve_local_sits_path(report_dir, filename)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="SITS file not found")
+    media = _excel_media_type(file_path)
+    return FileResponse(str(file_path), filename=file_path.name, media_type=media)
+
+
+@router.get("/api/local/sits/files")
+def local_sits_files(report_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    base = _resolve_report_dir(report_dir)
+    sits_dir = _local_sits_dir(base)
+    if not sits_dir.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    for f in sorted(sits_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if f.suffix.lower() in (".xlsm", ".xlsx"):
+            payload = _load_excel_artifact_payload(
+                f,
+                "sits",
+                download_url=f"/api/local/sits/download/{f.name}",
+                preview_url=f"/api/local/sits/preview/{f.name}",
+            )
+            rows.append({
+                "filename": f.name,
+                "size": f.stat().st_size,
+                "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                "download_url": f"/api/local/sits/download/{f.name}",
+                "validation_report_path": payload.get("validation_report_path", ""),
+                "residual_report_path": payload.get("residual_report_path", ""),
+                "summary": payload.get("summary", {}),
+            })
+    return rows
+
+
+@router.get("/api/local/sits/preview/{filename}")
+def local_sits_preview(filename: str, report_dir: Optional[str] = None, max_rows: int = 30) -> Dict[str, Any]:
+    """Preview SITS Excel content as JSON table data."""
+    file_path = _resolve_local_sits_path(report_dir, filename)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="SITS file not found")
+    return _parse_xlsm_preview(file_path, max_rows)
+
+
+@router.get("/api/local/sits/view/{filename}")
+def local_sits_view(filename: str, report_dir: Optional[str] = None) -> Dict[str, Any]:
+    file_path = _resolve_local_sits_path(report_dir, filename)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="SITS file not found")
+    return _load_excel_artifact_payload(
+        file_path,
+        "sits",
+        download_url=f"/api/local/sits/download/{file_path.name}",
+        preview_url=f"/api/local/sits/preview/{file_path.name}",
+    )
+
+
 @router.post("/api/local/scm")
 def local_scm(req: ScmRequest) -> Dict[str, Any]:
     if req.mode.lower() == "git":
@@ -3024,6 +3450,30 @@ def local_preview_text(req: TextPreviewRequest) -> Dict[str, Any]:
         text = text[:max_chars]
         truncated = True
     return {"ok": True, "path": str(target), "text": text, "truncated": truncated}
+
+
+@router.post("/api/local/sds/view")
+def local_sds_view(req: SdsViewRequest) -> Dict[str, Any]:
+    if not req.path:
+        raise HTTPException(status_code=400, detail="path required")
+    target = Path(req.path).expanduser().resolve()
+    if not target.exists() or target.is_dir():
+        raise HTTPException(status_code=404, detail="file not found")
+    if target.suffix.lower() != ".docx":
+        raise HTTPException(status_code=400, detail="SDS view supports .docx only")
+    if not _is_allowed_req_doc(target):
+        raise HTTPException(status_code=400, detail="unsupported file type")
+    try:
+        view = build_sds_view_model(
+            str(target),
+            max_items=max(1, int(req.max_items or 500)),
+            changed_functions=dict(req.changed_functions or {}),
+            changed_files=list(req.changed_files or []),
+            flagged_modules=list(req.flagged_modules or []),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True, "view": view}
 
 
 @router.post("/api/local/open-folder")
