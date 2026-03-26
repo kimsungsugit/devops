@@ -119,3 +119,11 @@ from backend.helpers.session import (  # noqa: F401
     _session_meta_path,
     _track_process,
 )
+
+# --- vectorcast ---
+from backend.helpers.vectorcast import (  # noqa: F401
+    VECTORCAST_CONFIG_DIR,
+    build_vectorcast_metadata,
+    evaluate_vectorcast_readiness,
+    load_vectorcast_project_config,
+)

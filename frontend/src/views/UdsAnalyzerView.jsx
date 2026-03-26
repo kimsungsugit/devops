@@ -39,7 +39,7 @@ const buildQuery = (params) => {
   return qs.toString();
 };
 
-const IMPACT_TARGETS = ["uds", "suts", "sts", "sds"];
+const IMPACT_TARGETS = ["uds", "suts", "sits", "sts", "sds"];
 
 const summarizeUdsDiff = (row) => {
   const before = row?.before || {};
@@ -402,16 +402,48 @@ const buildSutsCaseGroups = (changeDetail, artifactText, focusedChangeFunction) 
     });
 };
 
-const getSitsGuidanceKo = (overviewDetail) => {
-  const changedFiles = Array.isArray(overviewDetail?.changed_files) ? overviewDetail.changed_files.length : 0;
-  const changedFunctions = overviewDetail?.changed_functions && typeof overviewDetail.changed_functions === "object"
-    ? Object.keys(overviewDetail.changed_functions).length
-    : 0;
-  return [
-    `현재 최신 run 기준 변경 파일 ${changedFiles}개, 변경 함수 ${changedFunctions}개가 감지되어 있습니다.`,
-    "SITS 기능이 추가되면 이 영역에서 테스트 실행 영향 요약, 생성 결과, review 사유를 같은 방식으로 보여줄 예정입니다.",
-    "지금은 상단 Code Change Overview와 Impact 결과를 기준으로 SITS 연결 대상 함수를 먼저 검토하면 됩니다.",
-  ];
+const getSitsGuidanceKo = (changeDetail) => {
+  const kinds = new Set(
+    Object.values(changeDetail?.changed_functions || {}).map((k) => String(k || "").toUpperCase())
+  );
+  const sitsSummary = changeDetail?.documents?.sits?.summary || {};
+  const deltaTC = Number(sitsSummary.delta_cases ?? 0);
+  const deltaSub = Number(sitsSummary.delta_sub_cases ?? 0);
+  const guidance = [];
+
+  if (kinds.has("SIGNATURE") || kinds.has("HEADER")) {
+    guidance.push("모듈 인터페이스가 변경되었습니다. call chain 진입점의 입력 파라미터, 반환값, 연계 모듈 계약을 먼저 확인하세요.");
+  }
+  if (kinds.has("BODY")) {
+    guidance.push("통합 흐름 내 로직이 변경되었습니다. sub-case의 기대값과 경계 조건이 현재 구현과 일치하는지 검토하세요.");
+  }
+  if (kinds.has("VARIABLE")) {
+    guidance.push("global/static 변수 사용 방식이 바뀌었습니다. 통합 테스트 Precondition과 상태 초기화 조건을 확인하세요.");
+  }
+  if (deltaTC !== 0) {
+    guidance.push(`TC 수가 ${deltaTC >= 0 ? "+" : ""}${deltaTC}개 변동되었습니다. 새로 추가되거나 삭제된 call chain을 확인하세요.`);
+  }
+  if (deltaSub !== 0) {
+    guidance.push(`Sub-case 수가 ${deltaSub >= 0 ? "+" : ""}${deltaSub}개 변동되었습니다. 경계값 커버리지를 재검토하세요.`);
+  }
+  if (guidance.length === 0) {
+    guidance.push("변경된 함수가 포함된 call chain을 기준으로 통합 테스트 명세와 현재 구현이 일치하는지 검토하세요.");
+  }
+  return guidance;
+};
+
+const getSitsReviewCategoriesKo = (changeDetail) => {
+  const kinds = new Set(
+    Object.values(changeDetail?.changed_functions || {}).map((k) => String(k || "").toUpperCase())
+  );
+  const categories = [];
+  if (kinds.has("SIGNATURE") || kinds.has("HEADER")) categories.push("인터페이스 변경 — call chain 재검토");
+  if (kinds.has("BODY")) categories.push("로직 변경 — 기대값/경계값 재검토");
+  if (kinds.has("VARIABLE")) categories.push("상태/데이터 변경 — Precondition 재검토");
+  if (kinds.has("NEW")) categories.push("신규 함수 — 통합 흐름 추가 여부 확인");
+  if (kinds.has("DELETE")) categories.push("함수 삭제 — TC 유효성 확인");
+  if (categories.length === 0) categories.push("일반 SITS 재검토");
+  return categories;
 };
 
 const SummaryCard = ({ item, onClick }) => (
@@ -526,60 +558,132 @@ const LatestRunCard = ({ items, onOpen, onPreviewReport, groupLabel }) => {
   );
 };
 
-const ImpactResultCard = ({ result }) => {
-  const changedFiles = Array.isArray(result?.changed_files) ? result.changed_files : [];
-  const changedFunctions = result?.changed_functions && typeof result.changed_functions === "object"
-    ? Object.entries(result.changed_functions)
+const _CHANGE_TYPE_KO = { SIGNATURE: "인터페이스 변경", BODY: "로직 변경", NEW: "신규 추가", DELETE: "삭제", VARIABLE: "변수 변경", HEADER: "헤더 변경" };
+const _DOC_STATUS_STYLE = {
+  completed:  { color: "#22c55e", label: "자동 재생성 완료" },
+  auto:       { color: "#22c55e", label: "자동 재생성 완료" },
+  flagged:    { color: "#f59e0b", label: "검토 필요" },
+  flag:       { color: "#f59e0b", label: "검토 필요" },
+  skipped:    { color: "#94a3b8", label: "변경 없음" },
+  error:      { color: "#ef4444", label: "오류" },
+};
+const _statusStyle = (s) => _DOC_STATUS_STYLE[String(s || "").toLowerCase()] || { color: "#94a3b8", label: String(s || "-") };
+
+const _ImpactDocRow = ({ docKey, doc, open, onToggle }) => {
+  const st = _statusStyle(doc?.status);
+  const summary = doc?.summary || {};
+  const fns = Array.isArray(doc?.flagged_functions) ? doc.flagged_functions
+    : Array.isArray(doc?.changed_functions) ? doc.changed_functions.map((f) => f?.function || f?.name || String(f))
+    : Array.isArray(doc?.changed_cases) ? doc.changed_cases.map((f) => f?.function || String(f))
     : [];
-  const direct = Array.isArray(result?.impacted_functions?.direct) ? result.impacted_functions.direct.length : 0;
-  const indirect1 = Array.isArray(result?.impacted_functions?.indirect_1hop) ? result.impacted_functions.indirect_1hop.length : 0;
-  const indirect2 = Array.isArray(result?.impacted_functions?.indirect_2hop) ? result.impacted_functions.indirect_2hop.length : 0;
-  const actions = result?.actions && typeof result.actions === "object" ? Object.entries(result.actions) : [];
-  const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+  const hasDetail = fns.length > 0;
+
+  const metaItems = [];
+  if (docKey === "uds") {
+    if (summary.changed_functions) metaItems.push(`${summary.changed_functions}개 함수 재생성`);
+  } else if (docKey === "suts") {
+    if (summary.changed_cases != null) metaItems.push(`TC ${summary.before_cases ?? "?"}→${summary.changed_cases}`);
+    if (summary.changed_sequences != null) metaItems.push(`Seq ${summary.before_sequences ?? "?"}→${summary.changed_sequences}`);
+  } else if (docKey === "sits") {
+    if (summary.test_case_count != null) metaItems.push(`TC ${summary.before_test_case_count ?? "?"}→${summary.test_case_count}`);
+    if (summary.delta_cases != null) metaItems.push(`Δ${summary.delta_cases >= 0 ? "+" : ""}${summary.delta_cases} TC`);
+    if (summary.delta_sub_cases != null) metaItems.push(`Δ${summary.delta_sub_cases >= 0 ? "+" : ""}${summary.delta_sub_cases} Sub`);
+  } else if (docKey === "sts" || docKey === "sds") {
+    if (summary.flagged_functions) metaItems.push(`${summary.flagged_functions}개 함수 수동 검토 필요`);
+  }
+
   return (
-    <div className="card" style={{ padding: 14, marginTop: 12 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <strong>Impact Summary</strong>
-        <span className="badge">files {changedFiles.length} / funcs {changedFunctions.length}</span>
+    <div style={{ borderBottom: "1px solid var(--border, #e2e8f0)" }}>
+      <div
+        className="row"
+        style={{ padding: "8px 4px", gap: 10, alignItems: "center", cursor: hasDetail ? "pointer" : "default" }}
+        onClick={hasDetail ? onToggle : undefined}
+      >
+        <span style={{ fontWeight: 700, width: 48, textTransform: "uppercase", color: "var(--text)", fontSize: "0.85em" }}>{docKey}</span>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: st.color, flexShrink: 0 }} />
+        <span style={{ color: st.color, fontSize: "0.82em", fontWeight: 600, minWidth: 110 }}>{st.label}</span>
+        <span className="hint" style={{ flex: 1, fontSize: "0.82em" }}>{metaItems.join("  ·  ") || "-"}</span>
+        {hasDetail ? <span className="hint" style={{ fontSize: "0.78em" }}>{open ? "▲" : "▼"} {fns.length}개</span> : null}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginTop: 10 }}>
-        <div className="card" style={{ padding: 10 }}>
-          <div className="hint">Direct</div>
-          <div style={{ fontWeight: 700 }}>{direct}</div>
-        </div>
-        <div className="card" style={{ padding: 10 }}>
-          <div className="hint">Indirect 1-hop</div>
-          <div style={{ fontWeight: 700 }}>{indirect1}</div>
-        </div>
-        <div className="card" style={{ padding: 10 }}>
-          <div className="hint">Indirect 2-hop</div>
-          <div style={{ fontWeight: 700 }}>{indirect2}</div>
-        </div>
-      </div>
-      {actions.length > 0 ? (
-        <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
-          {actions.map(([key, value]) => (
-            <div key={key} className="row" style={{ justifyContent: "space-between", gap: 12 }}>
-              <span style={{ fontWeight: 600, textTransform: "uppercase" }}>{key}</span>
-              <span className="hint">
-                {String(value?.mode || "-").toUpperCase()} / {String(value?.status || "-")}
+      {open && hasDetail ? (
+        <div style={{ padding: "4px 8px 10px 60px" }}>
+          <div style={{ fontSize: "0.8em", color: "var(--text-muted, #64748b)", marginBottom: 4 }}>
+            {docKey === "sts" || docKey === "sds" ? "검토 필요 함수" : "변경 함수"}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {fns.slice(0, 40).map((fn, i) => (
+              <span key={i} style={{ fontSize: "0.78em", background: "var(--card-bg, #f1f5f9)", border: "1px solid var(--border, #e2e8f0)", borderRadius: 4, padding: "1px 6px", fontFamily: "monospace" }}>
+                {String(fn)}
               </span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {changedFunctions.length > 0 ? (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Changed Functions</div>
-          <div className="card" style={{ padding: 10, maxHeight: 220, overflow: "auto", whiteSpace: "pre-wrap" }}>
-            {changedFunctions.map(([name, change]) => `${name} : ${change}`).join("\n")}
+            ))}
+            {fns.length > 40 ? <span className="hint" style={{ fontSize: "0.78em" }}>+{fns.length - 40}개 더</span> : null}
           </div>
         </div>
       ) : null}
+    </div>
+  );
+};
+
+const ImpactResultCard = ({ result }) => {
+  const [openDoc, setOpenDoc] = useState(null);
+  const changedFiles = Array.isArray(result?.changed_files) ? result.changed_files : [];
+  const changedFunctions = result?.changed_functions && typeof result.changed_functions === "object"
+    ? Object.entries(result.changed_functions) : [];
+  const counts = result?.impact_counts || {};
+  const docs = result?.documents && typeof result.documents === "object" ? result.documents : {};
+  const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+  const DOC_ORDER = ["uds", "suts", "sits", "sts", "sds"];
+
+  return (
+    <div className="card" style={{ padding: 14, marginTop: 12 }}>
+      {/* 헤더 */}
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <strong>Impact 결과</strong>
+        <div className="row" style={{ gap: 8 }}>
+          <span className="badge">파일 {changedFiles.length}</span>
+          <span className="badge">함수 {changedFunctions.length}</span>
+          {counts.direct != null ? <span className="badge">직접 {counts.direct} / 1hop {counts.indirect_1hop || 0} / 2hop {counts.indirect_2hop || 0}</span> : null}
+        </div>
+      </div>
+
+      {/* 변경 함수 목록 */}
+      {changedFunctions.length > 0 ? (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: "0.82em", fontWeight: 600, marginBottom: 6, color: "var(--text-muted, #64748b)" }}>변경된 함수</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {changedFunctions.map(([name, type]) => (
+              <span key={name} style={{ fontSize: "0.78em", background: "var(--card-bg, #f1f5f9)", border: "1px solid var(--border, #e2e8f0)", borderRadius: 4, padding: "2px 7px", fontFamily: "monospace" }}>
+                {name}
+                <span className="hint" style={{ marginLeft: 4, fontSize: "0.9em" }}>{_CHANGE_TYPE_KO[String(type).toUpperCase()] || type}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* 문서별 영향 */}
+      {DOC_ORDER.some((k) => docs[k]) ? (
+        <div style={{ border: "1px solid var(--border, #e2e8f0)", borderRadius: 6, overflow: "hidden" }}>
+          <div style={{ padding: "6px 8px", background: "var(--card-bg, #f8fafc)", fontSize: "0.8em", fontWeight: 600, color: "var(--text-muted, #64748b)", borderBottom: "1px solid var(--border, #e2e8f0)" }}>
+            문서별 영향
+          </div>
+          {DOC_ORDER.map((k) => docs[k] ? (
+            <_ImpactDocRow
+              key={k}
+              docKey={k}
+              doc={docs[k]}
+              open={openDoc === k}
+              onToggle={() => setOpenDoc((prev) => prev === k ? null : k)}
+            />
+          ) : null)}
+        </div>
+      ) : null}
+
+      {/* 경고 */}
       {warnings.length > 0 ? (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Warnings</div>
-          <div className="card" style={{ padding: 10, maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap" }}>
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: "0.82em", marginBottom: 4 }}>경고</div>
+          <div className="card" style={{ padding: 8, maxHeight: 120, overflow: "auto", fontSize: "0.8em", whiteSpace: "pre-wrap" }}>
             {warnings.join("\n")}
           </div>
         </div>
@@ -602,7 +706,7 @@ const JenkinsImpactPanel = ({
   const [scmId, setScmId] = useState("");
   const [buildNumber, setBuildNumber] = useState("");
   const [baseRef, setBaseRef] = useState("");
-  const [targets, setTargets] = useState(["uds", "suts", "sts", "sds"]);
+  const [targets, setTargets] = useState(["uds", "suts", "sits", "sts", "sds"]);
   const [jobState, setJobState] = useState(null);
   const [impactResult, setImpactResult] = useState(null);
   const [impactError, setImpactError] = useState("");
@@ -818,6 +922,7 @@ const UdsAnalyzerView = ({
   const [udsDocMode, setUdsDocMode] = useState("current");
   const [stsDocMode, setStsDocMode] = useState("current");
   const [sutsDocMode, setSutsDocMode] = useState("current");
+  const [sitsDocMode, setSitsDocMode] = useState("current");
   const [sdsDocMode, setSdsDocMode] = useState("current");
   const [docRegistryItems, setDocRegistryItems] = useState([]);
   const [docScmId, setDocScmId] = useState("");
@@ -840,6 +945,10 @@ const UdsAnalyzerView = ({
   const [sutsSelectedChangeDetail, setSutsSelectedChangeDetail] = useState(null);
   const [sutsArtifactText, setSutsArtifactText] = useState("");
   const [sutsArtifactLoading, setSutsArtifactLoading] = useState(false);
+  const [sitsChangeHistoryItems, setSitsChangeHistoryItems] = useState([]);
+  const [sitsChangeHistoryLoading, setSitsChangeHistoryLoading] = useState(false);
+  const [sitsSelectedRunId, setSitsSelectedRunId] = useState("");
+  const [sitsSelectedChangeDetail, setSitsSelectedChangeDetail] = useState(null);
   const [sdsChangeHistoryItems, setSdsChangeHistoryItems] = useState([]);
   const [sdsChangeHistoryLoading, setSdsChangeHistoryLoading] = useState(false);
   const [sdsSelectedRunId, setSdsSelectedRunId] = useState("");
@@ -1606,6 +1715,23 @@ const UdsAnalyzerView = ({
     loadRecentSummaries();
   }, [loadRecentSummaries]);
 
+  const refreshOverview = useCallback(async (scmId) => {
+    const id = String(scmId || docScmId || "").trim();
+    if (!id) return;
+    if (id !== docScmId) setDocScmId(id);
+    try {
+      const data = await fetchJson(`/api/scm/change-history/${encodeURIComponent(id)}?limit=10`, { timeoutMs: 30000 });
+      const rows = Array.isArray(data?.items) ? data.items : [];
+      setOverviewHistoryItems(rows);
+      const latestRunId = String(rows[0]?.run_id || "").trim();
+      if (!latestRunId) { setOverviewDetail(null); return; }
+      const detail = await fetchJson(`/api/scm/change-history/detail/${encodeURIComponent(latestRunId)}`, { timeoutMs: 30000 });
+      setOverviewDetail(detail?.item || null);
+    } catch {
+      setOverviewDetail(null);
+    }
+  }, [docScmId]);
+
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -1814,6 +1940,53 @@ const UdsAnalyzerView = ({
     run();
     return () => { cancelled = true; };
   }, [artifactType, sutsDocMode, sutsSelectedRunId]);
+
+  // SITS change history list
+  useEffect(() => {
+    if (artifactType !== "sits" || sitsDocMode !== "applied" || !String(docScmId || "").trim()) {
+      if (sitsDocMode !== "applied") {
+        setSitsChangeHistoryItems([]);
+        setSitsSelectedRunId("");
+      }
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      setSitsChangeHistoryLoading(true);
+      try {
+        const data = await fetchJson(`/api/scm/change-history/${encodeURIComponent(docScmId)}?limit=20`, { timeoutMs: 30000 });
+        if (cancelled) return;
+        const rows = Array.isArray(data?.items) ? data.items : [];
+        setSitsChangeHistoryItems(rows);
+        setSitsSelectedRunId((prev) => prev || String(rows[0]?.run_id || ""));
+      } catch {
+        if (!cancelled) { setSitsChangeHistoryItems([]); setSitsSelectedRunId(""); }
+      } finally {
+        if (!cancelled) setSitsChangeHistoryLoading(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [artifactType, sitsDocMode, docScmId]);
+
+  // SITS change detail
+  useEffect(() => {
+    if (artifactType !== "sits" || sitsDocMode !== "applied" || !String(sitsSelectedRunId || "").trim()) {
+      if (sitsDocMode !== "applied") setSitsSelectedChangeDetail(null);
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const data = await fetchJson(`/api/scm/change-history/detail/${encodeURIComponent(sitsSelectedRunId)}`, { timeoutMs: 30000 });
+        if (!cancelled) setSitsSelectedChangeDetail(data?.item || null);
+      } catch {
+        if (!cancelled) setSitsSelectedChangeDetail(null);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [artifactType, sitsDocMode, sitsSelectedRunId]);
 
   useEffect(() => {
     if (artifactType !== "sts" || stsDocMode !== "applied") {
@@ -2356,7 +2529,7 @@ const UdsAnalyzerView = ({
     { label: "SDS", value: overviewSummary.sds_flagged || 0, tone: "sds" },
     { label: "UDS", value: overviewSummary.uds_changed_functions || 0, tone: "uds" },
     { label: "STS", value: overviewSummary.sts_flagged || 0, tone: "sts" },
-    { label: "SUTS", value: overviewSummary.suts_changed_cases || 0, tone: "suts" },
+    { label: "SUTS", value: overviewSummary.suts_changed_cases || overviewSummary.suts_changed_functions || 0, tone: "suts" },
     { label: "SITS", value: overviewSummary.sits_changed_cases || overviewSummary.sits_flagged || 0, tone: "sits" },
   ];
   const commonContextChecks = [
@@ -2719,6 +2892,7 @@ const UdsAnalyzerView = ({
               setScmRevision={setScmRevision}
               runScm={runScm}
               scmOutput={scmOutput}
+              onImpactComplete={refreshOverview}
             />
           )}
         </>
@@ -3559,8 +3733,151 @@ const UdsAnalyzerView = ({
         style={{ display: artifactType === "sits" ? "" : "none" }}
       >
         <AnalyzerSectionToolbar
-          title="SITS Document"
+          title={`SITS Document (${sitsDocMode === "applied" ? "Applied" : "Current"})`}
         />
+        <div className="row" style={{ marginBottom: 12 }}>
+          <div className="segmented-group">
+            <button type="button" className={`segmented-btn ${sitsDocMode === "current" ? "active" : ""}`} onClick={() => setSitsDocMode("current")}>
+              Current
+            </button>
+            <button type="button" className={`segmented-btn ${sitsDocMode === "applied" ? "active" : ""}`} onClick={() => setSitsDocMode("applied")}>
+              Applied
+            </button>
+          </div>
+          {sitsDocMode === "applied" ? (
+            <select value={docScmId} onChange={(e) => setDocScmId(e.target.value)}>
+              <option value="">SCM Registry</option>
+              {docRegistryItems.map((item) => (
+                <option key={item.id} value={item.id}>{item.name || item.id}</option>
+              ))}
+            </select>
+          ) : null}
+        </div>
+
+        {sitsDocMode === "applied" ? (
+          <div className="card" style={{ padding: 14, marginBottom: 12 }}>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <strong>SITS Applied Change History</strong>
+              <span className="hint">{sitsChangeHistoryLoading ? "loading..." : `${sitsChangeHistoryItems.length} runs`}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 300px) minmax(0, 1fr)", gap: 12, marginTop: 12, alignItems: "stretch" }}>
+              <div className="card" style={{ padding: 10, maxHeight: 520, minHeight: 520, overflow: "auto" }}>
+                {sitsChangeHistoryItems.length > 0 ? (
+                  sitsChangeHistoryItems.map((item) => (
+                    <button
+                      key={item.run_id}
+                      type="button"
+                      className={`latest-run-entry ${sitsSelectedRunId === item.run_id ? "is-selected" : ""}`}
+                      onClick={() => setSitsSelectedRunId(item.run_id)}
+                      style={{ width: "100%", textAlign: "left", marginBottom: 8 }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600 }}>{item.run_id}</div>
+                        <div className="hint">{item.timestamp || "-"}</div>
+                        <div className="hint">
+                          TC {item.summary?.sits_test_cases || 0}
+                          {item.summary?.sits_delta_cases ? ` (Δ${item.summary.sits_delta_cases >= 0 ? "+" : ""}${item.summary.sits_delta_cases})` : ""}
+                          {" / "}Sub {item.summary?.sits_sub_cases || 0}
+                        </div>
+                      </div>
+                      <span className="badge">{item.dry_run ? "DRY" : "RUN"}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="empty">적용된 SITS 변경 이력이 없습니다.</div>
+                )}
+              </div>
+              <div className="card" style={{ padding: 10, minWidth: 0, maxHeight: 520, minHeight: 520, overflow: "auto" }} >
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                  <strong>Applied Diff</strong>
+                  <span className="hint">{sitsSelectedChangeDetail?.run_id || "select run"}</span>
+                </div>
+                {sitsSelectedChangeDetail ? (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8, marginTop: 10 }}>
+                      <div className="card" style={{ padding: 10 }}>
+                        <div className="hint">Changed Files</div>
+                        <div style={{ fontWeight: 700 }}>{Array.isArray(sitsSelectedChangeDetail.changed_files) ? sitsSelectedChangeDetail.changed_files.length : 0}</div>
+                      </div>
+                      <div className="card" style={{ padding: 10 }}>
+                        <div className="hint">TC 수</div>
+                        <div style={{ fontWeight: 700 }}>{sitsSelectedChangeDetail.summary?.sits_test_cases || 0}</div>
+                      </div>
+                      <div className="card" style={{ padding: 10 }}>
+                        <div className="hint">TC 변동</div>
+                        <div style={{ fontWeight: 700 }}>
+                          {sitsSelectedChangeDetail.summary?.sits_delta_cases >= 0 ? "+" : ""}
+                          {sitsSelectedChangeDetail.summary?.sits_delta_cases ?? "-"}
+                        </div>
+                      </div>
+                      <div className="card" style={{ padding: 10 }}>
+                        <div className="hint">Sub-cases</div>
+                        <div style={{ fontWeight: 700 }}>{sitsSelectedChangeDetail.summary?.sits_sub_cases || 0}</div>
+                      </div>
+                    </div>
+                    <div className="card" style={{ padding: 10, marginTop: 12 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 6 }}>검토 가이드</div>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        {getSitsGuidanceKo(sitsSelectedChangeDetail).map((line, idx) => (
+                          <div key={`sits-guide-${idx}`} className="hint" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{line}</div>
+                        ))}
+                      </div>
+                    </div>
+                    {getSitsReviewCategoriesKo(sitsSelectedChangeDetail).length > 0 ? (
+                      <div className="card" style={{ padding: 10, marginTop: 12 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>리뷰 분류</div>
+                        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                          {getSitsReviewCategoriesKo(sitsSelectedChangeDetail).map((label) => (
+                            <span key={`sits-category-${label}`} className="badge tone-warn">{label}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {focusedChangeFunction ? (
+                      <div className="card" style={{ padding: 10, marginTop: 12 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>점프 대상 함수</div>
+                        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <div className="hint" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{focusedChangeFunction}</div>
+                          <span className={`badge ${Object.keys(sitsSelectedChangeDetail?.changed_functions || {}).includes(focusedChangeFunction) ? "tone-accent" : ""}`}>
+                            {Object.keys(sitsSelectedChangeDetail?.changed_functions || {}).includes(focusedChangeFunction) ? "현재 run과 연결됨" : "목록에서 관련 항목 확인"}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="card" style={{ padding: 10, marginTop: 12 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 6 }}>변경 함수 / 유형</div>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {sitsSelectedChangeDetail?.changed_functions && typeof sitsSelectedChangeDetail.changed_functions === "object" ? (
+                          Object.entries(sitsSelectedChangeDetail.changed_functions).map(([name, kind]) => (
+                            <div key={name} className={`card ${focusedChangeFunction && name === focusedChangeFunction ? "latest-run-entry is-focused" : ""}`} style={{ padding: 10 }}>
+                              <div style={{ fontWeight: 600 }}>{name}</div>
+                              <div className="hint">변경 유형: {String(kind || "-").toUpperCase()}</div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="empty">변경 함수 정보가 없습니다.</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="card" style={{ padding: 10, marginTop: 12 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 6 }}>변경 파일</div>
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {Array.isArray(sitsSelectedChangeDetail.changed_files) && sitsSelectedChangeDetail.changed_files.length > 0 ? (
+                          sitsSelectedChangeDetail.changed_files.map((file) => (
+                            <div key={file} className="hint" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{file}</div>
+                          ))
+                        ) : <div className="empty">변경 파일 기록이 없습니다.</div>}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty" style={{ marginTop: 20 }}>왼쪽에서 run을 선택하세요.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <div className="card" style={{ padding: 14, marginBottom: 12 }}>
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div>

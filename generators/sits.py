@@ -9,6 +9,7 @@ Generates XLSM output matching the reference SITS structure:
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -1226,6 +1227,7 @@ def validate_sits_xlsm(xlsm_path: str) -> Dict[str, Any]:
                 sub_count += 1
 
         stats["tc_count"] = tc_count
+        stats["flow_count"] = tc_count  # 1 flow per ITC in SITS
         stats["sub_case_count"] = sub_count
         stats["avg_sub_per_tc"] = round(sub_count / max(tc_count, 1), 1)
 
@@ -1545,6 +1547,50 @@ def generate_sits(
             "elapsed_seconds": round(time.time() - t0, 1),
             "error": f"XLSM 생성 실패: {e}",
         }
+
+    # ── Stage 9.5: save intermediate JSON for VectorCAST export ─────────────
+    try:
+        _intermediate: Dict[str, Any] = {
+            "schema_version": "1.0",
+            "project_id": (project_config or {}).get("project_id", "PROJECT"),
+            "source": {
+                "source_root": source_root,
+                "sits_path": actual_output,
+                "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            },
+            "integrations": [
+                {
+                    "tc_id": itc["tc_id"],
+                    "entry_fn": itc["entry_fn"],
+                    "call_chain": itc["call_chain"],
+                    "module_name": itc["module_name"],
+                    "gen_method": itc["gen_method"],
+                    "asil": itc.get("asil", "QM"),
+                    "metadata": {"related_ids": itc["related_ids"]},
+                    "sub_cases": [
+                        {
+                            "case_num": sc.get("case_num", i + 1),
+                            "case_label": sc.get("case_label", str(i + 1)),
+                            "precondition": sc.get("precondition", ""),
+                            "inputs": sc.get("inputs") or {},
+                            "expected": sc.get("expected") or {},
+                        }
+                        for i, sc in enumerate(itc.get("sub_cases") or [])
+                    ],
+                }
+                for itc in itcs
+            ],
+            "export_warnings": [],
+        }
+        _intermediate_path = Path(actual_output).with_name(
+            Path(actual_output).stem + "_vectorcast.json"
+        )
+        _intermediate_path.write_text(
+            json.dumps(_intermediate, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        _logger.info("SITS: intermediate JSON saved → %s", _intermediate_path)
+    except Exception as _e:
+        _logger.warning("SITS: intermediate JSON save failed: %s", _e)
 
     # ── Stage 10: validation ─────────────────────────────────────────────────
     _progress(90, "XLSM 검증 중")

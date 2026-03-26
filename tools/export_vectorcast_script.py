@@ -139,6 +139,9 @@ def _build_manifest(model: Dict[str, Any], *, package_name: str, csv_name: str) 
             "import_stub_cmd": "run_vectorcast_import.cmd",
             "test_script_template": "vectorcast_tests.template.tst",
             "environment_template": "vectorcast_environment.template.env",
+            "uut_manifest": "uut_manifest.json",
+            "dependency_manifest": "dependency_manifest.json",
+            "mapping_report": "mapping_report.json",
         },
     }
 
@@ -248,10 +251,31 @@ def _write_test_script_template(model: Dict[str, Any], out_path: Path) -> None:
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _write_environment_template(model: Dict[str, Any], out_path: Path, *, source_root: str = "", compiler: str = "CC") -> None:
+def _write_environment_template(
+    model: Dict[str, Any],
+    out_path: Path,
+    *,
+    source_root: str = "",
+    compiler: str = "CC",
+    project_config: Dict[str, Any] | None = None,
+) -> None:
+    cfg = dict(project_config or {})
     root = Path(source_root) if source_root else None
     search_paths: List[str] = []
-    if root and root.exists():
+    include_paths = [str(x).strip() for x in (cfg.get("include_paths") or []) if str(x).strip()]
+    source_paths = [str(x).strip() for x in (cfg.get("source_paths") or []) if str(x).strip()]
+    if include_paths or source_paths:
+        for raw_path in include_paths + source_paths:
+            candidate = Path(raw_path)
+            if root and root.exists():
+                try:
+                    rel = candidate.relative_to(root)
+                    search_paths.append(f"ENVIRO.SEARCH_LIST: $(PROJECT_DIR)\\{rel.as_posix().replace('/', chr(92))}")
+                    continue
+                except Exception:
+                    pass
+            search_paths.append(f"ENVIRO.SEARCH_LIST: {raw_path}")
+    elif root and root.exists():
         candidates = [
             root / "Sources",
             root / "Sources" / "APP",
@@ -276,15 +300,27 @@ def _write_environment_template(model: Dict[str, Any], out_path: Path, *, source
         "ENVIRO.COVERAGE_TYPE: Statement+Branch",
         "ENVIRO.LIBRARY_STUBS:  ",
         "ENVIRO.STUB: ALL_BY_PROTOTYPE",
-        f"ENVIRO.COMPILER: {compiler}",
+        f"ENVIRO.COMPILER: {str(cfg.get('compiler') or compiler or 'CC').strip() or 'CC'}",
         "ENVIRO.TYPE_HANDLED_DIRS_ALLOWED: ",
     ]
     lines.extend(search_paths or ["ENVIRO.SEARCH_LIST: $(PROJECT_DIR)\\Sources"])
+    if cfg.get("compiler_options"):
+        lines.append(f"-- Compiler Options: {' '.join(str(x) for x in cfg.get('compiler_options') or [])}")
+    if cfg.get("linker"):
+        lines.append(f"-- Linker: {cfg.get('linker')}")
+    if cfg.get("linker_options"):
+        lines.append(f"-- Linker Options: {' '.join(str(x) for x in cfg.get('linker_options') or [])}")
+    if cfg.get("existing_env_file"):
+        lines.append(f"-- Existing Environment File: {cfg.get('existing_env_file')}")
+    if cfg.get("existing_project_file"):
+        lines.append(f"-- Existing Project File: {cfg.get('existing_project_file')}")
     lines.append("ENVIRO.END")
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_import_stub(out_path: Path) -> None:
+def _write_import_stub(out_path: Path, *, project_config: Dict[str, Any] | None = None) -> None:
+    cfg = dict(project_config or {})
+    regression_cmd = str(cfg.get("regression_command_template") or "").strip()
     lines = [
         "@echo off",
         "setlocal",
@@ -304,9 +340,68 @@ def _write_import_stub(out_path: Path) -> None:
         "echo [INFO] CLI = %VECTORCAST_CLI%",
         "echo [INFO] ENV = %VECTORCAST_ENV%",
         "echo [INFO] Replace this file with project-specific import commands after confirming local VectorCAST syntax.",
-        "exit /b 0",
     ]
+    if regression_cmd:
+        lines.extend(
+            [
+                "echo [INFO] Suggested regression command template:",
+                f"echo [INFO] {regression_cmd}",
+            ]
+        )
+    lines.extend([
+        "exit /b 0",
+    ])
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_supporting_metadata(
+    model: Dict[str, Any],
+    manifest: Dict[str, Any],
+    out_dir: Path,
+    *,
+    project_config: Dict[str, Any] | None = None,
+) -> None:
+    cfg = dict(project_config or {})
+    uut_payload = {
+        "project_id": str(cfg.get("project_id") or model.get("project_id") or "").strip(),
+        "units": [
+            {
+                "unit_name": str(unit.get("unit_name") or ""),
+                "component": str(unit.get("component") or ""),
+                "fid": str(unit.get("fid") or ""),
+                "test_case_count": len(unit.get("test_cases") or []),
+            }
+            for unit in model.get("units") or []
+        ],
+        "configured_sources": cfg.get("uut_sources") or [],
+        "configured_headers": cfg.get("uut_headers") or [],
+    }
+    dependency_payload = {
+        "dependency_sources": cfg.get("dependency_sources") or [],
+        "dependency_libs": cfg.get("dependency_libs") or [],
+        "dependency_objects": cfg.get("dependency_objects") or [],
+        "compiler": cfg.get("compiler") or "",
+        "linker": cfg.get("linker") or "",
+        "compiler_options": cfg.get("compiler_options") or [],
+        "linker_options": cfg.get("linker_options") or [],
+        "include_paths": cfg.get("include_paths") or [],
+        "source_paths": cfg.get("source_paths") or [],
+    }
+    mapping_payload = {
+        "package_name": manifest.get("package_name"),
+        "warning_count": len(model.get("export_warnings") or []),
+        "warnings": model.get("export_warnings") or [],
+        "units_with_manual_review": [
+            str(unit.get("unit_name") or "")
+            for unit in model.get("units") or []
+            if unit.get("warnings")
+        ],
+    }
+    (out_dir / "uut_manifest.json").write_text(json.dumps(uut_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "dependency_manifest.json").write_text(
+        json.dumps(dependency_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (out_dir / "mapping_report.json").write_text(json.dumps(mapping_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def export_vectorcast_package(
@@ -316,6 +411,7 @@ def export_vectorcast_package(
     package_name: str = "",
     source_root: str = "",
     compiler: str = "CC",
+    project_config: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     model = _load_json(intermediate_json)
     target_dir = Path(out_dir)
@@ -328,8 +424,15 @@ def export_vectorcast_package(
     (target_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     _write_instructions(model, manifest, target_dir / "import_instructions.md")
     _write_test_script_template(model, target_dir / "vectorcast_tests.template.tst")
-    _write_environment_template(model, target_dir / "vectorcast_environment.template.env", source_root=source_root, compiler=compiler)
-    _write_import_stub(target_dir / "run_vectorcast_import.cmd")
+    _write_environment_template(
+        model,
+        target_dir / "vectorcast_environment.template.env",
+        source_root=source_root,
+        compiler=compiler,
+        project_config=project_config,
+    )
+    _write_import_stub(target_dir / "run_vectorcast_import.cmd", project_config=project_config)
+    _write_supporting_metadata(model, manifest, target_dir, project_config=project_config)
     return manifest
 
 

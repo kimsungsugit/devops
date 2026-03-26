@@ -21,6 +21,8 @@ from workflow.impact_changes import build_change_log, write_change_log
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTO_DOCS = {"uds", "suts", "sits"}
 FLAG_DOCS = {"sts", "sds"}
+# Default matrix — AUTO targets are only executed when trigger.auto_generate=True;
+# otherwise they are downgraded to FLAG at runtime.
 ACTION_MATRIX: Dict[str, Dict[str, str]] = {
     # sits: cross-module integration — AUTO on any functional change, FLAG on header-only
     "SIGNATURE": {"uds": "AUTO", "suts": "AUTO", "sits": "AUTO", "sts": "FLAG", "sds": "FLAG"},
@@ -117,6 +119,82 @@ def _update_linked_doc(entry_id: str, field: str, path_text: str) -> None:
     update_entry(entry_id, ScmUpdateRequest(linked_docs=ScmLinkedDocs(**merged)))
 
 
+def _load_uds_fn_details(
+    linked_doc: str, flagged_fns: List[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Load UDS spec fields per flagged function from the payload sidecar."""
+    if not linked_doc:
+        return {}
+    payload_path = Path(linked_doc).with_suffix(".payload.json")
+    if not payload_path.exists():
+        return {}
+    payload = _load_json(payload_path)
+    by_name: Dict[str, Any] = payload.get("function_details_by_name") or {}
+    if not by_name:
+        for info in (payload.get("function_details") or {}).values():
+            if isinstance(info, dict) and info.get("name"):
+                by_name[str(info["name"]).strip().lower()] = info
+    result: Dict[str, Dict[str, Any]] = {}
+    for fn in flagged_fns:
+        key = fn.strip().lower()
+        info = by_name.get(key) or {}
+        if info:
+            result[fn] = {
+                "description": str(info.get("description") or ""),
+                "inputs": info.get("inputs") or [],
+                "outputs": info.get("outputs") or [],
+                "asil": str(info.get("asil") or ""),
+                "related": str(info.get("related") or ""),
+            }
+    return result
+
+
+def _load_suts_fn_tcs(
+    linked_doc: str, flagged_fns: List[str]
+) -> Dict[str, List[str]]:
+    """Return {fn_name: [tc_id, ...]} by parsing the existing SUTS xlsm.
+    Falls back to empty dict on any error (file missing, parse failure, etc.)."""
+    if not linked_doc or not Path(linked_doc).exists():
+        return {}
+    try:
+        from tools.export_suts_vectorcast import build_vectorcast_model  # type: ignore
+        model = build_vectorcast_model(linked_doc, target_functions=flagged_fns)
+        result: Dict[str, List[str]] = {}
+        for unit in model.get("units") or []:
+            name = str(unit.get("unit_name") or "").strip()
+            # each test_case row carries base_tc_id (the TC block identifier)
+            tcs = [str(tc.get("base_tc_id") or "") for tc in unit.get("test_cases") or [] if tc.get("base_tc_id")]
+            if name and tcs:
+                result[name] = list(dict.fromkeys(tcs))
+        return result
+    except Exception:
+        return {}
+
+
+def _load_sits_fn_chains(
+    linked_doc: str, flagged_fns: List[str]
+) -> Dict[str, List[str]]:
+    """Return {entry_fn: [label, ...]} from the SITS vectorcast intermediate JSON."""
+    if not linked_doc:
+        return {}
+    stem = Path(linked_doc).stem
+    intermediate = Path(linked_doc).with_name(stem + "_vectorcast.json")
+    if not intermediate.exists():
+        return {}
+    data = _load_json(intermediate)
+    fn_set = {fn.strip().lower() for fn in flagged_fns}
+    result: Dict[str, List[str]] = {}
+    for itc in data.get("integrations") or []:
+        entry = str(itc.get("entry_fn") or "").strip()
+        if entry.lower() in fn_set:
+            chain = str(itc.get("call_chain") or "").strip()
+            tc_id = str(itc.get("tc_id") or "")
+            label = f"{tc_id}: {chain}" if tc_id else chain
+            if label:
+                result.setdefault(entry, []).append(label)
+    return result
+
+
 def _write_review_artifact(
     target: str,
     trigger: ChangeTrigger,
@@ -184,21 +262,167 @@ def _write_review_artifact(
     lines.append(f"- direct: `{len(impact_groups.get('direct', []))}`")
     lines.append(f"- indirect_1hop: `{len(impact_groups.get('indirect_1hop', []))}`")
     lines.append(f"- indirect_2hop: `{len(impact_groups.get('indirect_2hop', []))}`")
+    # --- Function Details section ---
+    change_kinds = set(changed_types.values())
+    is_signature = "SIGNATURE" in change_kinds
+    is_header = "HEADER" in change_kinds
+    flagged_fns = list(changed_types.keys())
+    # Load document-specific data (best-effort; empty dict if linked_doc missing)
+    uds_doc_details: Dict[str, Any] = _load_uds_fn_details(linked_doc, flagged_fns) if target == "uds" else {}
+    suts_tcs: Dict[str, Any] = _load_suts_fn_tcs(linked_doc, flagged_fns) if target == "suts" else {}
+    sits_chains: Dict[str, Any] = _load_sits_fn_chains(linked_doc, flagged_fns) if target == "sits" else {}
+
+    lines.extend(["", "## Function Details"])
+    for fn, kind in sorted(changed_types.items()):
+        src = by_name.get(fn.lower()) or {}
+        lines.append(f"\n### `{fn}` ({kind})")
+
+        # ── Source-level info (always available from by_name) ──────────────
+        src_module    = str(src.get("module_name") or "").strip()
+        src_file      = str(src.get("file") or "").strip()
+        src_prototype = str(src.get("prototype") or "").strip()
+        src_desc      = str(src.get("description") or src.get("comment") or "").strip()
+        src_inputs    = src.get("inputs") or src.get("params") or []
+        src_outputs   = src.get("outputs") or []
+        src_calls     = src.get("calls_list") or src.get("calls") or []
+        src_asil      = str(src.get("asil") or "").strip()
+        src_req_ids   = _extract_req_ids(src)
+
+        lines.append("**소스 현황:**")
+        if src_module:
+            lines.append(f"- 모듈: `{src_module}`")
+        if src_file:
+            lines.append(f"- 파일: `{src_file}`")
+        if src_prototype:
+            lines.append(f"- 프로토타입: `{src_prototype}`")
+        if src_desc:
+            lines.append(f"- 설명 (주석): {src_desc[:300]}{'...' if len(src_desc) > 300 else ''}")
+        if src_inputs:
+            lines.append(f"- 입력 파라미터: `{', '.join(str(x) for x in src_inputs[:8])}`")
+        if src_outputs:
+            lines.append(f"- 출력: `{', '.join(str(x) for x in src_outputs[:6])}`")
+        if src_asil:
+            lines.append(f"- ASIL: `{src_asil}`")
+        if src_calls:
+            lines.append(f"- 호출하는 함수: `{', '.join(str(x) for x in src_calls[:8])}`")
+        if src_req_ids:
+            lines.append(f"- 연관 요구사항: `{', '.join(src_req_ids[:10])}`")
+        if not any([src_module, src_file, src_prototype, src_inputs, src_outputs, src_calls]):
+            lines.append("- (소스 파싱 정보 없음)")
+
+        # ── Document-specific info (from linked payload) ───────────────────
+        if target == "uds":
+            det = uds_doc_details.get(fn) or {}
+            if det:
+                lines.append("")
+                lines.append("**UDS 스펙 현황 (링크 문서):**")
+                doc_desc = (det.get("description") or "").strip()
+                if doc_desc:
+                    lines.append(f"- 현재 설명: {doc_desc[:300]}{'...' if len(doc_desc) > 300 else ''}")
+                doc_in = det.get("inputs") or []
+                if doc_in:
+                    lines.append(f"- 현재 inputs: `{', '.join(str(x) for x in doc_in[:6])}`")
+                doc_out = det.get("outputs") or []
+                if doc_out:
+                    lines.append(f"- 현재 outputs: `{', '.join(str(x) for x in doc_out[:6])}`")
+        elif target == "suts":
+            tcs = suts_tcs.get(fn) or []
+            lines.append("")
+            lines.append("**SUTS 기존 TC:**")
+            if tcs:
+                lines.append(f"- TC 목록: `{', '.join(tcs[:12])}{'...' if len(tcs) > 12 else ''}`")
+                lines.append(f"- TC 수: `{len(tcs)}`")
+            else:
+                lines.append("- 기존 TC 없음 또는 문서 미연결 (새로 작성 필요)")
+        elif target == "sits":
+            chains = sits_chains.get(fn) or []
+            if src_calls:
+                lines.append("")
+                lines.append("**통합 호출 관계 (소스 기준):**")
+                for callee in src_calls[:6]:
+                    lines.append(f"- `{fn}` → `{callee}`")
+            if chains:
+                lines.append("")
+                lines.append("**SITS 기존 Call Chain (링크 문서):**")
+                for chain in chains[:5]:
+                    lines.append(f"- {chain}")
+                if len(chains) > 5:
+                    lines.append(f"- ... 외 {len(chains) - 5}개")
+
+        # ── Change-type-specific update guidance ───────────────────────────
+        lines.append("")
+        lines.append(f"**{kind} 변경 시 검토 항목:**")
+        if target == "uds":
+            if kind == "BODY":
+                lines.append("- UDS 기능 설명(description) 섹션: 내부 동작/로직 변경 반영")
+                lines.append("- outputs 필드: 반환값·출력 범위 변경 여부 확인")
+                if src_calls:
+                    lines.append(f"- calls_list 섹션: 호출 함수 추가/제거 반영")
+            elif kind in ("SIGNATURE", "HEADER"):
+                lines.append("- inputs 필드: 파라미터 추가·삭제·타입 변경 반영")
+                lines.append("- outputs 필드: 반환 타입 변경 반영")
+                lines.append("- 인터페이스 계약(interface contract) 섹션 전면 검토")
+            lines.append("- ASIL 등급 유지 여부 확인")
+            if src_req_ids:
+                lines.append(f"- 요구사항 링크 유효성 확인: `{', '.join(src_req_ids[:6])}`")
+        elif target == "suts":
+            if kind == "BODY":
+                lines.append("- 기존 TC의 Expected 값 재검토 (동작 변경 시 실패 예상)")
+                lines.append("- 새로운 실행 경로·분기 조건에 대한 TC 추가 여부 확인")
+            elif kind in ("SIGNATURE", "HEADER"):
+                lines.append("- TC 입력 파라미터 정의 변경 필요 (시그니처 변경)")
+                lines.append("- 파라미터 추가 시: 새 입력값 경계 TC 추가")
+                lines.append("- 파라미터 삭제 시: 해당 TC 삭제 또는 수정")
+            lines.append("- 삭제된 함수인 경우 연관 TC 전체 제거")
+        elif target == "sits":
+            if kind == "BODY":
+                lines.append("- 통합 TC 시퀀스의 Expected 결과 재검토")
+                lines.append("- 호출 순서·조건 변경 시 Call Chain TC 시퀀스 수정")
+            elif kind in ("SIGNATURE", "HEADER"):
+                lines.append("- Entry point 파라미터 변경 → 통합 TC 입력값 업데이트")
+                lines.append("- 인터페이스 변경 시 모든 연관 통합 시나리오 재검토")
+        elif target == "sts":
+            if kind == "BODY":
+                lines.append("- 요구사항 Pass/Fail 기준에 영향을 주는 동작 변경 확인")
+                lines.append("- 기존 STS TC Expected 결과 재확인")
+            elif kind in ("SIGNATURE", "HEADER"):
+                lines.append("- 시그니처 변경 → 관련 TC 입력 인터페이스 업데이트")
+                lines.append("- 삭제/추가된 파라미터에 해당하는 TC 추가/제거")
+            if src_req_ids:
+                lines.append(f"- 트레이서빌리티 확인 대상: `{', '.join(src_req_ids[:6])}`")
+        else:
+            lines.append("- 모듈/인터페이스 설명이 변경 내용과 일치하는지 확인")
+
+    # --- Review Checklist summary ---
     lines.extend(["", "## Review Checklist"])
-    if target == "sts":
-        lines.extend(
-            [
-                "- Verify impacted requirements and TC coverage.",
-                "- Check whether changed function behavior invalidates existing expected results.",
-                "- Confirm new/deleted signatures require new or removed test cases.",
-            ]
-        )
+    if target == "uds":
+        lines.append("- [ ] 위 각 함수의 UDS 스펙 설명(description)이 변경 내용을 반영하는가?")
+        if is_signature or is_header:
+            lines.append("- [ ] inputs/outputs 인터페이스 정의가 새 시그니처와 일치하는가?")
+        lines.append("- [ ] ASIL 등급이 변경된 동작 범위와 일치하는가?")
+        lines.append("- [ ] 관련 요구사항(SwTR/SwFn) 링크가 유효한가?")
+        lines.append("- [ ] calls_list (호출 함수 목록)이 최신 소스와 일치하는가?")
+    elif target == "suts":
+        lines.append("- [ ] 위 기존 TC의 예상 결과가 변경된 동작에 맞게 갱신되었는가?")
+        if is_signature or is_header:
+            lines.append("- [ ] TC 입력 파라미터 정의가 새 시그니처와 일치하는가?")
+        lines.append("- [ ] 새로운 실행 경로를 커버하는 TC가 추가되었는가?")
+        lines.append("- [ ] 삭제된 함수에 해당하는 TC가 제거되었는가?")
+    elif target == "sits":
+        lines.append("- [ ] 위 Call Chain을 포함하는 통합 TC 시퀀스가 유효한가?")
+        lines.append("- [ ] 변경된 함수와 하위 모듈의 인터페이스 계약이 유지되는가?")
+        if is_signature or is_header:
+            lines.append("- [ ] 통합 TC의 entry point 파라미터가 새 시그니처와 일치하는가?")
+    elif target == "sts":
+        lines.append("- [ ] 변경된 함수와 연결된 요구사항 트레이서빌리티가 유효한가?")
+        lines.append("- [ ] 변경된 동작이 기존 Pass/Fail 기준을 무효화하는가?")
+        if is_signature or is_header:
+            lines.append("- [ ] 시그니처 변경으로 인해 추가/삭제해야 할 TC가 있는가?")
     else:
         lines.extend(
             [
-                "- Verify module/interface description still matches header and source changes.",
-                "- Check affected components and interface contracts.",
-                "- Confirm architecture partition impact is documented if needed.",
+                "- [ ] 모듈/인터페이스 설명이 헤더/소스 변경과 일치하는가?",
+                "- [ ] 아키텍처 파티션 영향이 문서화되었는가?",
             ]
         )
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -460,12 +684,17 @@ def _summarize_actions(
     changed_types: Dict[str, str],
     changed_files: List[str],
     impact_groups: Dict[str, List[str]],
+    *,
+    auto_generate: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     impacted_all = set(impact_groups.get("direct", [])) | set(impact_groups.get("indirect_1hop", [])) | set(impact_groups.get("indirect_2hop", []))
     changed_direct = set(impact_groups.get("direct", []))
     actions: Dict[str, Dict[str, Any]] = {}
     for target in targets:
         decision = _action_for_target(target, changed_types, changed_files)
+        # Downgrade AUTO → FLAG when auto_generate is disabled
+        if decision == "AUTO" and not auto_generate:
+            decision = "FLAG"
         if decision == "AUTO":
             funcs = sorted(impacted_all if target in AUTO_DOCS else changed_direct)
             actions[target] = {
@@ -548,7 +777,7 @@ def run_impact_update(
             warnings.append(
                 f"impacted function count exceeded limit ({impacted_total}>{options.max_impacted_functions}); promote to review"
             )
-        actions = _summarize_actions(targets, changed_types, trigger.changed_files, impact_groups)
+        actions = _summarize_actions(targets, changed_types, trigger.changed_files, impact_groups, auto_generate=bool(trigger.auto_generate))
         if warnings:
             for target, info in actions.items():
                 if info.get("mode") == "AUTO":

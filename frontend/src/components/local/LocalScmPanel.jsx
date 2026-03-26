@@ -191,6 +191,7 @@ const LocalScmPanel = ({
   setScmRevision,
   runScm,
   scmOutput,
+  onImpactComplete,
 }) => {
   const [registryItems, setRegistryItems] = useState([]);
   const [registryLoading, setRegistryLoading] = useState(false);
@@ -201,6 +202,7 @@ const LocalScmPanel = ({
   const [impactResult, setImpactResult] = useState(null);
   const [impactError, setImpactError] = useState("");
   const [impactErrorInfo, setImpactErrorInfo] = useState(null);
+  const [autoGenerate, setAutoGenerate] = useState(false);
   const [auditItems, setAuditItems] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [changeHistoryItems, setChangeHistoryItems] = useState([]);
@@ -336,17 +338,15 @@ const LocalScmPanel = ({
   const slowRunHint = useMemo(() => {
     if (!impactLoading) return "";
     if (runElapsedSec >= 180) return "이 프로젝트의 dry-run은 실제로 3~5분 이상 걸릴 수 있습니다.";
-    if (runElapsedSec >= 60) return "대형 프로젝트 분석은 1분 이상 걸릴 수 있습니다.";
-    if (runElapsedSec >= 20) return "蹂寃??⑥닔? ?곹뼢 踰붿쐞瑜?怨꾩궛 以묒엯?덈떎.";
+    if (runElapsedSec >= 20) return "변경 파일 수가 많을수록 분석 시간이 길어집니다.";
     return "";
   }, [impactLoading, runElapsedSec]);
   const activeJobStatus = String(activeJob?.status || "").toLowerCase();
   const recommendedNextStep = useMemo(() => {
     if (impactErrorInfo) {
-      if (impactErrorInfo.code === "run_lock_active") return "다음 추천 액션: 현재 실행이 끝난 뒤 Recent Runs에서 상태를 확인하고 다시 시도하세요.";
-      if (impactErrorInfo.code === "svn_connection_error") return "?ㅼ쓬 異붿쿇 ?≪뀡: SVN working copy 寃쎈줈? ?곌껐 ?곹깭瑜?癒쇱? ?뺤씤?섏꽭??";
-      if (impactErrorInfo.code === "file_not_found") return "?ㅼ쓬 異붿쿇 ?≪뀡: source_root 諛?linked_docs 寃쎈줈瑜??먭??섏꽭??";
-      if (impactErrorInfo.retryable) return "?ㅼ쓬 異붿쿇 ?≪뀡: ?먯씤 ?뺤씤 ???ㅼ떆 ?쒕룄?섏꽭??";
+      if (impactErrorInfo.code === "svn_connection_error") return "다음 추천 액션: SVN working copy 경로의 연결 상태를 먼저 확인하세요.";
+      if (impactErrorInfo.code === "file_not_found") return "다음 추천 액션: source_root 및 linked_docs 경로를 확인하세요.";
+      if (impactErrorInfo.retryable) return "다음 추천 액션: 원인 확인 후 다시 시도하세요.";
     }
     if (!impactResult) return "";
     if (impactResult.dry_run) {
@@ -354,12 +354,12 @@ const LocalScmPanel = ({
       const autoTargets = ACTION_ORDER.filter((key) => String(actions?.[key]?.mode || "").toUpperCase() === "AUTO");
       const flagTargets = ACTION_ORDER.filter((key) => String(actions?.[key]?.mode || "").toUpperCase() === "FLAG");
       if (autoTargets.length > 0) {
-        return `?ㅼ쓬 異붿쿇 ?≪뀡: ${autoTargets.map((item) => item.toUpperCase()).join(", ")} ?먮룞 媛깆떊???ㅽ뻾?섏꽭??`;
+        return `다음 추천 액션: ${autoTargets.map((item) => item.toUpperCase()).join(", ")} 자동 갱신을 실행하세요.`;
       }
       if (flagTargets.length > 0) {
         return `다음 추천 액션: ${flagTargets.map((item) => item.toUpperCase()).join(", ")} review artifact를 먼저 확인하세요.`;
       }
-      return "?ㅼ쓬 異붿쿇 ?≪뀡: ?꾩옱 ?곹뼢???놁쑝誘濡??ㅽ뻾 ?놁씠 ?좎??대룄 ?⑸땲??";
+      return "다음 추천 액션: 현재 영향 범위가 없으므로 실행 없이 완료됩니다.";
     }
     if (activeUdsOutputPath || activeSutsOutputPath) {
       return "다음 추천 액션: 생성된 UDS/SUTS 결과와 STS/SDS review artifact를 확인하세요.";
@@ -602,8 +602,7 @@ const LocalScmPanel = ({
           if (cancelled) return;
           setImpactResult(resultData?.result || null);
           setImpactError("");
-          setImpactErrorInfo(null);
-          setPanelNotice(job.dry_run ? "Dry run ?꾨즺" : "Impact ?ㅽ뻾 ?꾨즺");
+          setPanelNotice(job.dry_run ? "Dry run 완료" : "Impact 실행 완료");
           setImpactLoading(false);
           setRunStage("");
           setRunStartedAt(null);
@@ -611,12 +610,12 @@ const LocalScmPanel = ({
           await loadRegistry();
           await loadAudit(selectedScmId || job.scm_id || "");
           await loadChangeHistory(selectedScmId || job.scm_id || "");
+          if (typeof onImpactComplete === "function") onImpactComplete(selectedScmId || job.scm_id || "");
           return;
         }
         if (status === "failed") {
           const error = job.error || {};
-          const normalized = normalizeErrorPayload(error);
-          const title = String(normalized?.title || "Impact ?ㅽ뻾 ?ㅽ뙣");
+          const title = String(normalized?.title || "Impact 실행 실패");
           const detail = String(normalized?.detail || "").trim();
           setImpactError(detail ? `${title}: ${detail}` : title);
           setImpactErrorInfo(normalized);
@@ -632,7 +631,7 @@ const LocalScmPanel = ({
       } catch (e) {
         if (!cancelled) {
           setImpactError(e.message);
-          setImpactErrorInfo(normalizeErrorPayload({ title: "Job ?곹깭 議고쉶 ?ㅽ뙣", detail: e.message, retryable: true, code: "job_status_failed" }));
+          setImpactErrorInfo(normalizeErrorPayload({ title: "Job 상태 조회 실패", detail: e.message, retryable: true, code: "job_status_failed" }));
           setImpactLoading(false);
           setRunStage("");
         }
@@ -679,7 +678,7 @@ const LocalScmPanel = ({
       if (!res.ok) throw new Error(await readErrorMessage(res));
       setStatusData(await res.json());
     } catch (e) {
-      setPanelNotice(`?곹깭 ?뺤씤 ?ㅽ뙣: ${e.message}`);
+      setPanelNotice(`상태 확인 실패: ${e.message}`);
     } finally {
       setStatusLoading(false);
       setRunStage("");
@@ -716,7 +715,7 @@ const LocalScmPanel = ({
 
   const copyPath = async (path, label) => {
     const ok = await copyText(path);
-    setPanelNotice(ok ? `${label} 寃쎈줈瑜?蹂듭궗?덉뒿?덈떎.` : `${label} 寃쎈줈 蹂듭궗???ㅽ뙣?덉뒿?덈떎.`);
+    setPanelNotice(ok ? `${label} 경로를 복사했습니다.` : `${label} 경로 복사에 실패했습니다.`);
   };
 
   const previewArtifact = async (path) => {
@@ -848,6 +847,7 @@ const LocalScmPanel = ({
         scm_id: selectedScmId,
         base_ref: selectedRegistry?.base_ref || "",
         dry_run: !!dryRun,
+        auto_generate: !dryRun && autoGenerate,
         targets,
         manual_changed_files: changedFiles,
       };
@@ -871,10 +871,10 @@ const LocalScmPanel = ({
         setSutsViewData(null);
         setSutsPreviewData(null);
       }
-      setPanelNotice(dryRun ? "Dry run job???쒖옉?섏뿀?듬땲??" : "Impact ?ㅽ뻾 job???쒖옉?섏뿀?듬땲??");
+      setPanelNotice(dryRun ? "Dry run job이 시작되었습니다." : "Impact 실행 job이 시작되었습니다.");
     } catch (e) {
       setImpactError(e.message);
-      setImpactErrorInfo(normalizeErrorPayload({ title: "Impact job ?쒖옉 ?ㅽ뙣", detail: e.message, retryable: true, code: "job_start_failed" }));
+      setImpactErrorInfo(normalizeErrorPayload({ title: "Impact job 시작 실패", detail: e.message, retryable: true, code: "job_start_failed" }));
       setImpactResult(null);
       setActiveJob(null);
       clearActiveJob();
@@ -1205,7 +1205,21 @@ const LocalScmPanel = ({
           <div className="hint">
             SVN working copy가 깨끗하면 여기에서 검증용 changed files를 직접 넣을 수 있습니다.
           </div>
-          <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <div className="row" style={{ alignItems: "center", gap: 10, marginTop: 12 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+              <input
+                type="checkbox"
+                checked={autoGenerate}
+                onChange={(e) => setAutoGenerate(e.target.checked)}
+                disabled={impactLoading}
+              />
+              <span>자동 생성</span>
+            </label>
+            <span className="hint" style={{ fontSize: "0.78rem" }}>
+              {autoGenerate ? "UDS/SUTS/SITS를 자동으로 재생성합니다" : "플래그만 세우고 문서는 재생성하지 않습니다"}
+            </span>
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
             <button type="button" className="btn-outline" disabled={impactLoading || !selectedScmId} onClick={() => triggerImpact(true)}>
               {impactLoading ? "분석 중..." : "Dry Run"}
             </button>

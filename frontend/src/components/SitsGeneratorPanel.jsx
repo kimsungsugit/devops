@@ -1,6 +1,8 @@
 import { useCallback, useState } from "react";
 import ExcelArtifactViewer from "./ExcelArtifactViewer";
 
+const SITS_API_BASE = "/api/local/sits";
+
 export default function SitsGeneratorPanel({
   pickDirectory,
   pickFile,
@@ -45,6 +47,31 @@ export default function SitsGeneratorPanel({
 }) {
   const [selectedFilename, setSelectedFilename] = useState("");
   const [showAdvancedOverrides, setShowAdvancedOverrides] = useState(false);
+  const [vcExporting, setVcExporting] = useState(false);
+  const [vcNotice, setVcNotice] = useState("");
+
+  const handleExportVectorcast = useCallback(async () => {
+    if (!selectedFilename) { setVcNotice("파일을 먼저 선택하세요."); return; }
+    setVcExporting(true);
+    setVcNotice("");
+    try {
+      const body = new FormData();
+      body.append("filename", selectedFilename);
+      if (sourceRoot) body.append("source_root", sourceRoot);
+      const res = await fetch(`${SITS_API_BASE}/export-vectorcast`, { method: "POST", body });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
+      const summary = data?.manifest?.summary || {};
+      setVcNotice(
+        `VectorCAST 패키지 생성 완료: ${data.package_name} ` +
+        `(${summary.integration_count} TCs / ${summary.sub_case_count} sub-cases)`
+      );
+    } catch (e) {
+      setVcNotice(`오류: ${e.message || String(e)}`);
+    } finally {
+      setVcExporting(false);
+    }
+  }, [selectedFilename, sourceRoot]);
 
   const handlePickDir = useCallback(async (setter, label) => {
     if (!pickDirectory) return;
@@ -185,7 +212,17 @@ export default function SitsGeneratorPanel({
           >
             상세 조회
           </button>
+          <button
+            type="button"
+            className="btn-outline"
+            disabled={!selectedFilename || vcExporting}
+            onClick={handleExportVectorcast}
+            title="SITS → VectorCAST 통합 테스트 패키지 생성"
+          >
+            {vcExporting ? "내보내는 중..." : "VectorCAST Export"}
+          </button>
         </div>
+        {vcNotice ? <div className="hint" style={{ marginTop: 6 }}>{vcNotice}</div> : null}
       </div>
 
       <ExcelArtifactViewer

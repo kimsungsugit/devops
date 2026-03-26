@@ -22,6 +22,12 @@ _FUNC_DECL_LINE = re.compile(
     r"[\w\s\*]*\s+(\w+)\s*\(",
     re.MULTILINE,
 )
+_FUNC_PROTO_LINE = re.compile(
+    r"^[+-]\s*(?:(?:extern|static|inline|volatile|const)\s+)*"
+    r"(?:void|int|uint\d+_t|int\d+_t|U\d+|S\d+|bool|float|double|char|unsigned|signed|CONSTP2VAR|P2FUNC|FUNC)"
+    r"[\w\s\*\(\),]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*;",
+    re.MULTILINE,
+)
 _HUNK_FUNC = re.compile(r"^@@.*@@\s*(?:.*?\s)?(\w+)\s*\(", re.MULTILINE)
 _VAR_DECL_LINE = re.compile(
     r"^[+-]\s*(?:static\s+)?(?:const\s+|volatile\s+|unsigned\s+|signed\s+)*"
@@ -58,11 +64,27 @@ def _run_unified_diff(
         cwd=str(root),
         capture_output=True,
         text=True,
+        errors="ignore",
         timeout=30,
     )
-    if result.returncode != 0:
-        return ""
-    return result.stdout
+    if result.returncode == 0 and result.stdout:
+        return result.stdout
+
+    if scm_type == "svn":
+        fallback_cmd = ["svn", "diff"]
+        if file_path:
+            fallback_cmd.append(file_path)
+        fallback = subprocess.run(
+            fallback_cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            timeout=30,
+        )
+        if fallback.returncode == 0:
+            return fallback.stdout
+    return ""
 
 
 def get_changed_files(
@@ -159,10 +181,12 @@ def classify_changed_functions(
             added_decl = {m.group(1) for m in re.finditer(r"^\+\s*.*?\b(\w+)\s*\(", diff_text, re.MULTILINE)}
             removed_decl = {m.group(1) for m in re.finditer(r"^-\s*.*?\b(\w+)\s*\(", diff_text, re.MULTILINE)}
             func_decl_names = {m.group(1) for m in _FUNC_DECL_LINE.finditer(diff_text)}
+            func_proto_names = {m.group(1) for m in _FUNC_PROTO_LINE.finditer(diff_text)}
             var_changed = bool(_VAR_DECL_LINE.search(diff_text))
             is_header = fpath.endswith(".h")
 
-            for func in sorted(hunk_funcs | func_decl_names):
+            candidates = hunk_funcs | func_decl_names | (func_proto_names if is_header else set())
+            for func in sorted(candidates):
                 current = classifications.get(func)
                 new_kind = "BODY"
 

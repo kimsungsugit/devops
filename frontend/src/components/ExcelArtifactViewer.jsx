@@ -80,7 +80,7 @@ export default function ExcelArtifactViewer({
   const previewIsTruncated = !!(activeSheet && Number(activeSheet.total_rows || 0) > (Array.isArray(activeSheet.rows) ? activeSheet.rows.length : 0));
   const openFullViewer = useCallback(async (filename) => {
     if (!filename || typeof onLoadPreview !== "function") return;
-    await onLoadPreview(filename, { maxRows: 200000 });
+    await onLoadPreview(filename, { maxRows: 5000 });
     setFullViewerOpen(true);
   }, [onLoadPreview]);
 

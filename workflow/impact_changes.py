@@ -170,11 +170,12 @@ def build_change_log(
             docs["uds"] = diff_uds_payload(before_payload, after_payload, uds_info.get("functions") or changed_types.keys())
             docs["uds"]["artifact_path"] = str(uds_info.get("output_path") or "")
         else:
+            flagged_count = int(uds_info.get("function_count") or 0)
             docs["uds"] = {
                 "status": str(uds_info.get("status") or "skipped"),
-                "summary": {"changed_functions": 0},
-                "changed_functions": [],
-                "artifact_path": str(uds_info.get("output_path") or ""),
+                "summary": {"changed_functions": flagged_count, "flagged_functions": flagged_count},
+                "changed_functions": [{"name": fn, "fields_changed": ["flagged"]} for fn in (uds_info.get("functions") or [])],
+                "artifact_path": str(uds_info.get("artifact_path") or uds_info.get("output_path") or ""),
             }
 
     suts_info = actions.get("suts") if isinstance(actions.get("suts"), dict) else {}
@@ -209,6 +210,7 @@ def build_change_log(
         before_payload = _load_json(_artifact_payload_path(previous_linked_docs.get("sits") or "") or Path("_missing_"))
         before_tc = int(before_payload.get("test_case_count") or 0)
         before_sub = int(before_payload.get("total_sub_cases") or 0)
+        flagged_fn_count = int(sits_info.get("function_count") or 0)
         docs["sits"] = {
             "status": str(sits_info.get("status") or "skipped"),
             "summary": {
@@ -218,8 +220,10 @@ def build_change_log(
                 "before_total_sub_cases": before_sub,
                 "delta_cases": after_tc - before_tc,
                 "delta_sub_cases": after_sub - before_sub,
+                "flagged_functions": flagged_fn_count,
             },
-            "artifact_path": str(sits_info.get("output_path") or ""),
+            "flagged_functions": list(sits_info.get("functions") or []),
+            "artifact_path": str(sits_info.get("artifact_path") or sits_info.get("output_path") or ""),
             "validation_report_path": str(exec_result.get("validation_report_path") or ""),
         }
 
@@ -242,6 +246,7 @@ def build_change_log(
         "sits_test_cases": int(docs.get("sits", {}).get("summary", {}).get("test_case_count", 0)),
         "sits_sub_cases": int(docs.get("sits", {}).get("summary", {}).get("total_sub_cases", 0)),
         "sits_delta_cases": int(docs.get("sits", {}).get("summary", {}).get("delta_cases", 0)),
+        "sits_flagged": int(docs.get("sits", {}).get("summary", {}).get("flagged_functions", 0)),
         "sts_flagged": int(docs.get("sts", {}).get("summary", {}).get("flagged_functions", 0)),
         "sds_flagged": int(docs.get("sds", {}).get("summary", {}).get("flagged_functions", 0)),
     }

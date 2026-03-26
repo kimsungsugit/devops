@@ -40,7 +40,7 @@ from backend.schemas import (
     TextPreviewRequest,
 )
 from datetime import datetime
-from backend.helpers import _apply_uds_view_filters, _augment_path, _build_excel_artifact_payload, _build_excel_artifact_summary, _build_preflight, _build_quality_evaluation, _collect_tool_paths, _compute_quick_quality_gate, _compute_uds_mapping_summary, _enrich_function_quality_fields, _generate_docx_with_retry, _get_progress, _get_source_sections_cached, _get_uds_view_payload_cached, _is_allowed_req_doc, _local_reports_dir, _local_sits_dir, _local_sts_dir, _local_suts_dir, _local_uds_dir, _open_local_path, _parse_component_map_file, _parse_path_list, _read_excel_artifact_sidecar, _resolve_local_report_path, _resolve_local_sits_path, _resolve_local_sts_path, _resolve_local_suts_path, _resolve_local_uds_path, _resolve_report_dir, _resolve_source_root_from_cfg, _run_impact_analysis_for_uds, _run_report_with_timeout, _set_progress, _validate_docx_template_bytes, _write_excel_artifact_sidecar, _write_residual_tbd_report, _write_upload_to_temp
+from backend.helpers import _apply_uds_view_filters, _augment_path, _build_excel_artifact_payload, _build_excel_artifact_summary, _build_preflight, _build_quality_evaluation, _collect_tool_paths, _compute_quick_quality_gate, _compute_uds_mapping_summary, _enrich_function_quality_fields, _generate_docx_with_retry, _get_progress, _get_source_sections_cached, _get_uds_view_payload_cached, _is_allowed_req_doc, _local_reports_dir, _local_sits_dir, _local_sts_dir, _local_suts_dir, _local_uds_dir, _open_local_path, _parse_component_map_file, _parse_path_list, _read_excel_artifact_sidecar, _resolve_local_report_path, _resolve_local_sits_path, _resolve_local_sts_path, _resolve_local_suts_path, _resolve_local_uds_path, _resolve_report_dir, _resolve_source_root_from_cfg, _run_impact_analysis_for_uds, _run_report_with_timeout, _set_progress, _validate_docx_template_bytes, _write_excel_artifact_sidecar, _write_residual_tbd_report, _write_upload_to_temp, build_vectorcast_metadata, evaluate_vectorcast_readiness, load_vectorcast_project_config
 from report_generator import (
     _build_req_map_from_doc_paths,
     enrich_function_details_with_docs,
@@ -116,6 +116,31 @@ def _pick_excel_suffix(template_path: Optional[str]) -> str:
         if suffix in (".xlsm", ".xlsx"):
             return suffix
     return ".xlsx"
+
+
+def _build_vectorcast_package_response(
+    *,
+    package_dir: Path,
+    package_name: str,
+    manifest: Dict[str, Any],
+    project_config: Dict[str, Any],
+    units: List[str],
+) -> Dict[str, Any]:
+    metadata = build_vectorcast_metadata(
+        project_config=project_config,
+        source_root=str(project_config.get("source_root") or ""),
+        units=units,
+    )
+    readiness = evaluate_vectorcast_readiness(metadata)
+    return {
+        "ok": True,
+        "package_dir": str(package_dir),
+        "package_name": package_name,
+        "manifest": manifest,
+        "files": sorted(str(p.name) for p in package_dir.iterdir() if p.is_file()),
+        "project_config": metadata,
+        "readiness": readiness,
+    }
 
 
 def _build_local_excel_output(base_dir: Path, category: str, stem: str, template_path: Optional[str]) -> Tuple[str, Path]:
@@ -343,6 +368,9 @@ def _parse_xlsm_preview(file_path: Path, max_rows: int = 30) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cannot open XLSM: {e}")
 
+    # Safety cap: full-viewer sends large max_rows but we cap to avoid timeout
+    effective_max_rows = min(max_rows, 5000)
+
     sheets: List[Dict[str, Any]] = []
     for sname in wb.sheetnames:
         ws = wb[sname]
@@ -354,23 +382,23 @@ def _parse_xlsm_preview(file_path: Path, max_rows: int = 30) -> Dict[str, Any]:
 
         col_limit = min(mc, _MAX_PREVIEW_COLS)
 
-        headers = []
-        for c in range(1, col_limit + 1):
-            val = ws.cell(row=1, column=c).value
-            headers.append(str(val) if val is not None else f"Col{c}")
-
+        headers: List[str] = []
         rows: List[List[Any]] = []
-        start_row = 1
-        for r in range(start_row, min(mr + 1, start_row + max_rows)):
+        # Use iter_rows() — much faster than ws.cell() in read_only mode
+        for row_idx, row in enumerate(ws.iter_rows(max_col=col_limit, values_only=True)):
+            if row_idx == 0:
+                headers = [str(v) if v is not None else f"Col{ci + 1}" for ci, v in enumerate(row)]
+                continue
+            if row_idx >= effective_max_rows:
+                break
             row_data: List[Any] = []
-            for c in range(1, col_limit + 1):
-                cell_val = ws.cell(row=r, column=c).value
-                if cell_val is None:
+            for v in row:
+                if v is None:
                     row_data.append("")
-                elif isinstance(cell_val, (int, float)):
-                    row_data.append(cell_val)
+                elif isinstance(v, (int, float)):
+                    row_data.append(v)
                 else:
-                    s = str(cell_val).strip()
+                    s = str(v).strip()
                     row_data.append(s[:200] if len(s) > 200 else s)
             if any(v != "" for v in row_data):
                 rows.append(row_data)
@@ -3124,6 +3152,62 @@ def local_sits_view(filename: str, report_dir: Optional[str] = None) -> Dict[str
     )
 
 
+@router.post("/api/local/sits/export-vectorcast")
+def local_sits_export_vectorcast(
+    filename: str = Form(""),
+    report_dir: str = Form(""),
+    source_root: str = Form(""),
+    compiler: str = Form("CC"),
+) -> Dict[str, Any]:
+    """Generate a VectorCAST integration test package from a SITS file."""
+    from tools.export_sits_vectorcast_package import export_sits_vectorcast_package
+
+    base_dir = _resolve_report_dir(report_dir)
+    sits_dir = _local_sits_dir(base_dir)
+
+    # Locate intermediate JSON (generated alongside the XLSM by generate_sits)
+    if filename:
+        xlsm_path = sits_dir / filename
+    else:
+        # latest XLSM in sits dir
+        candidates = sorted(sits_dir.glob("*.xlsm"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            raise HTTPException(status_code=404, detail="No SITS file found")
+        xlsm_path = candidates[0]
+
+    stem = xlsm_path.stem
+    intermediate_json = xlsm_path.with_name(f"{stem}_vectorcast.json")
+    if not intermediate_json.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Intermediate JSON not found: {intermediate_json.name}. Re-generate the SITS file first.",
+        )
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_name = f"sits_vectorcast_{ts}"
+    out_dir = base_dir / "vectorcast" / package_name
+
+    try:
+        manifest = export_sits_vectorcast_package(
+            str(intermediate_json),
+            str(out_dir),
+            package_name=package_name,
+            source_root=source_root,
+            compiler=compiler,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"VectorCAST 패키지 생성 실패: {e}")
+
+    return {
+        "ok": True,
+        "package_dir": str(out_dir),
+        "package_name": package_name,
+        "manifest": manifest,
+        "files": [str(p.name) for p in out_dir.iterdir() if p.is_file()],
+    }
+
+
 @router.post("/api/local/scm")
 def local_scm(req: ScmRequest) -> Dict[str, Any]:
     if req.mode.lower() == "git":
@@ -3156,6 +3240,7 @@ def local_impact_trigger(req: LocalImpactTriggerRequest) -> Dict[str, Any]:
             scm_id=req.scm_id,
             base_ref=req.base_ref,
             dry_run=req.dry_run,
+            auto_generate=req.auto_generate,
             targets=req.targets or None,
             manual_changed_files=req.manual_changed_files or None,
             metadata={"source": "api/local/impact/trigger"},
@@ -3173,6 +3258,7 @@ def local_impact_trigger_async(req: LocalImpactTriggerRequest) -> Dict[str, Any]
             scm_id=req.scm_id,
             base_ref=req.base_ref,
             dry_run=req.dry_run,
+            auto_generate=req.auto_generate,
             targets=req.targets or None,
             manual_changed_files=req.manual_changed_files or None,
             metadata={"source": "api/local/impact/trigger-async"},

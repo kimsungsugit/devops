@@ -361,6 +361,7 @@ class LocalImpactTriggerRequest(BaseModel):
     scm_id: str
     base_ref: str = ""
     dry_run: bool = False
+    auto_generate: bool = False
     targets: List[str] = Field(default_factory=list)
     manual_changed_files: List[str] = Field(default_factory=list)
 

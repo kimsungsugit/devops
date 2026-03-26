@@ -17,6 +17,7 @@ class ChangeTrigger:
     base_ref: str
     changed_files: List[str] = field(default_factory=list)
     dry_run: bool = False
+    auto_generate: bool = False
     targets: List[str] | None = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -30,6 +31,7 @@ def build_registry_trigger(
     scm_id: str,
     base_ref: str = "",
     dry_run: bool = False,
+    auto_generate: bool = False,
     targets: Optional[List[str]] = None,
     manual_changed_files: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -67,6 +69,7 @@ def build_registry_trigger(
         base_ref=resolved_base_ref,
         changed_files=changed_files,
         dry_run=bool(dry_run),
+        auto_generate=bool(auto_generate),
         targets=list(targets) if targets else None,
         metadata=dict(metadata or {}),
     )

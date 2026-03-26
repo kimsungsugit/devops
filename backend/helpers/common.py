@@ -197,14 +197,26 @@ def _build_excel_artifact_summary(artifact_type: str, result: Optional[Dict[str,
         tc_count = int(payload.get("test_case_count") or 0)
         sub_count = int(payload.get("total_sub_cases") or 0)
         avg_sub = round(sub_count / tc_count, 1) if tc_count else 0.0
+        # flow_count: from validation stats or direct field
+        flow_count = int(
+            payload.get("flow_count")
+            or (payload.get("validation") or {}).get("stats", {}).get("flow_count")
+            or tc_count  # fallback: 1 flow per ITC
+        )
+        # covered_reqs: from trace_coverage, or quality_report.with_related_count
+        covered_reqs = int(
+            trace.get("covered_reqs")
+            or quality.get("with_related_count")
+            or 0
+        )
         primary = [
             {"key": "test_case_count", "label": "Test Cases", "value": tc_count},
             {"key": "total_sub_cases", "label": "Sub-cases", "value": sub_count},
             {"key": "avg_sub_per_tc", "label": "Avg Sub/TC", "value": avg_sub},
         ]
         secondary = [
-            {"key": "flow_count", "label": "Flows", "value": int(payload.get("flow_count") or 0)},
-            {"key": "covered_reqs", "label": "Covered Reqs", "value": int(trace.get("covered_reqs") or 0)},
+            {"key": "flow_count", "label": "Flows", "value": flow_count},
+            {"key": "covered_reqs", "label": "Covered Reqs", "value": covered_reqs},
             {"key": "elapsed_seconds", "label": "Elapsed", "value": float(payload.get("elapsed_seconds") or 0), "unit": "s"},
         ]
     return {
