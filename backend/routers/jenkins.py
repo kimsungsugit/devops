@@ -40,7 +40,7 @@ from backend.schemas import (
 )
 from datetime import datetime
 import config
-from backend.helpers import _apply_uds_view_filters, _build_excel_artifact_payload, _build_excel_artifact_summary, _compute_uds_mapping_summary, _create_jenkins_zip_file, _generate_docx_with_retry, _get_progress, _get_uds_view_payload_cached, _is_allowed_req_doc, _jenkins_exports_dir, _jenkins_logic_dir, _jenkins_report_publish_impl, _jenkins_sts_dir, _jenkins_suts_dir, _jenkins_templates_dir, _load_uds_meta, _load_vectorcast_rag, _normalize_jenkins_cache_root, _parse_component_map_file, _parse_path_list, _read_excel_artifact_sidecar, _resolve_cached_build_root, _run_impact_analysis_for_uds, _run_report_with_timeout, _safe_extract_zip, _safe_int, _save_uds_meta, _set_progress, _split_csv, _uds_generate_from_paths, _write_excel_artifact_sidecar, _write_residual_tbd_report, _write_upload_to_temp
+from backend.helpers import _apply_uds_view_filters, _build_excel_artifact_payload, _build_excel_artifact_summary, _compute_uds_mapping_summary, _create_jenkins_zip_file, _generate_docx_with_retry, _get_progress, _get_uds_view_payload_cached, _is_allowed_req_doc, _jenkins_exports_dir, _jenkins_logic_dir, _jenkins_report_publish_impl, _jenkins_sts_dir, _jenkins_suts_dir, _jenkins_templates_dir, _load_uds_meta, _load_vectorcast_rag, _normalize_jenkins_cache_root, _parse_component_map_file, _parse_path_list, _read_excel_artifact_sidecar, _resolve_cached_build_root, _run_impact_analysis_for_uds, _run_report_with_timeout, _safe_extract_zip, _safe_int, _save_uds_meta, _set_progress, _split_csv, _uds_generate_from_paths, _write_excel_artifact_sidecar, _write_residual_tbd_report, _write_upload_to_temp, build_vectorcast_metadata, evaluate_vectorcast_readiness, load_vectorcast_project_config
 from backend.services.jenkins_helpers import _detect_reports_dir, _safe_artifact_path, _job_slug
 from backend.services.jenkins_client import JenkinsClient
 from backend.services.jenkins_service import (
@@ -137,6 +137,37 @@ def _build_label(job_url: str, cache_root: str, build_selector: str) -> str:
     if m:
         return f"Build {m.group(1)}"
     return build_root.name
+
+
+def _build_jenkins_vectorcast_response(
+    *,
+    job_url: str,
+    cache_root: str,
+    build_selector: str,
+    package_dir: Path,
+    package_name: str,
+    manifest: Dict[str, Any],
+    project_config: Dict[str, Any],
+    units: List[str],
+) -> Dict[str, Any]:
+    metadata = build_vectorcast_metadata(
+        project_config=project_config,
+        source_root=str(project_config.get("source_root") or ""),
+        units=units,
+    )
+    readiness = evaluate_vectorcast_readiness(metadata)
+    return {
+        "ok": True,
+        "job_url": job_url,
+        "cache_root": cache_root,
+        "build_label": _build_label(job_url, cache_root, build_selector),
+        "package_dir": str(package_dir),
+        "package_name": package_name,
+        "manifest": manifest,
+        "files": sorted(str(p.name) for p in package_dir.iterdir() if p.is_file()),
+        "project_config": metadata,
+        "readiness": readiness,
+    }
 
 
 def _infer_build_label_for_artifact(job_url: str, cache_root: str, artifact_path: Path, build_selector: str) -> str:
@@ -2038,6 +2069,74 @@ def jenkins_suts_view(job_url: str, cache_root: str, filename: str) -> Dict[str,
         download_url=f"/api/jenkins/suts/download?job_url={job_url}&cache_root={cache_root}&filename={target.name}",
         preview_url=f"/api/jenkins/suts/preview?job_url={job_url}&cache_root={cache_root}&filename={target.name}",
         build_label=_infer_build_label_for_artifact(job_url, cache_root, target, "lastSuccessfulBuild"),
+    )
+
+
+@router.post("/api/jenkins/suts/export-vectorcast")
+def jenkins_suts_export_vectorcast(
+    job_url: str = Form(...),
+    cache_root: str = Form(""),
+    build_selector: str = Form("lastSuccessfulBuild"),
+    filename: str = Form(""),
+    source_root: str = Form(""),
+    project_id: str = Form(""),
+    compiler: str = Form("CC"),
+) -> Dict[str, Any]:
+    """Generate a VectorCAST unit-test package from a Jenkins SUTS artifact."""
+    from tools.export_suts_vectorcast import export_suts_to_vectorcast_model
+    from tools.export_vectorcast_script import export_vectorcast_package
+
+    out_dir = _jenkins_suts_dir(cache_root)
+    if filename:
+        xlsm_path = (out_dir / filename).resolve()
+    else:
+        candidates = sorted(out_dir.glob("*.xlsm"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            raise HTTPException(status_code=404, detail="No Jenkins SUTS file found")
+        xlsm_path = candidates[0].resolve()
+    if not xlsm_path.exists():
+        raise HTTPException(status_code=404, detail="SUTS file not found")
+
+    resolved_source_root = str(source_root or "").strip()
+    cfg = load_vectorcast_project_config(project_id=project_id, source_root=resolved_source_root)
+    effective_project_id = str(project_id or cfg.get("project_id") or "VECTORCAST").strip()
+    effective_source_root = resolved_source_root or str(cfg.get("source_root") or "").strip()
+
+    package_name = f"suts_vectorcast_{_job_slug(job_url)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    package_dir = _jenkins_exports_dir(cache_root) / "vectorcast" / package_name
+    package_dir.mkdir(parents=True, exist_ok=True)
+    intermediate_json = package_dir / "suts_vectorcast_model.json"
+    warnings_md = package_dir / "suts_vectorcast_warnings.md"
+
+    try:
+        model = export_suts_to_vectorcast_model(
+            str(xlsm_path),
+            str(intermediate_json),
+            warnings_md=str(warnings_md),
+            project_id=effective_project_id,
+        )
+        manifest = export_vectorcast_package(
+            str(intermediate_json),
+            str(package_dir),
+            package_name=package_name,
+            source_root=effective_source_root,
+            compiler=str(cfg.get("compiler") or compiler or "CC"),
+            project_config=cfg,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"VectorCAST package generation failed: {exc}")
+
+    unit_names = [str(unit.get("unit_name") or "") for unit in model.get("units") or []]
+    return _build_jenkins_vectorcast_response(
+        job_url=job_url,
+        cache_root=cache_root,
+        build_selector=build_selector,
+        package_dir=package_dir,
+        package_name=package_name,
+        manifest=manifest,
+        project_config=cfg,
+        units=unit_names,
     )
 
 

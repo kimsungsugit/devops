@@ -54,6 +54,9 @@ def test_export_vectorcast_package_writes_expected_files(tmp_path: Path) -> None
     assert (out_dir / "run_vectorcast_import.cmd").exists()
     assert (out_dir / "vectorcast_tests.template.tst").exists()
     assert (out_dir / "vectorcast_environment.template.env").exists()
+    assert (out_dir / "uut_manifest.json").exists()
+    assert (out_dir / "dependency_manifest.json").exists()
+    assert (out_dir / "mapping_report.json").exists()
 
 
 def test_export_vectorcast_package_csv_contains_case_rows(tmp_path: Path) -> None:
@@ -86,3 +89,31 @@ def test_export_vectorcast_package_writes_template_content(tmp_path: Path) -> No
     assert "TEST.NAME:SwUFn_0001.001" in tst_text
     assert "ENVIRO.NEW" in env_text
     assert "ENVIRO.COMPILER: CC" in env_text
+
+
+def test_export_vectorcast_package_applies_project_config_metadata(tmp_path: Path) -> None:
+    input_json = tmp_path / "input.json"
+    out_dir = tmp_path / "pkg"
+    input_json.write_text(json.dumps(_sample_model(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    export_vectorcast_package(
+        str(input_json),
+        str(out_dir),
+        project_config={
+            "project_id": "TEST",
+            "compiler": "GHS",
+            "linker": "ghsld",
+            "include_paths": ["D:/Project/Ados/PDS64_RD/Project_Headers"],
+            "dependency_libs": ["libhal.lib"],
+            "regression_command_template": "vcastcli -e TEST",
+        },
+    )
+
+    env_text = (out_dir / "vectorcast_environment.template.env").read_text(encoding="utf-8")
+    dep = json.loads((out_dir / "dependency_manifest.json").read_text(encoding="utf-8"))
+    bat_text = (out_dir / "run_vectorcast_import.cmd").read_text(encoding="utf-8")
+
+    assert "ENVIRO.COMPILER: GHS" in env_text
+    assert "-- Linker: ghsld" in env_text
+    assert dep["dependency_libs"] == ["libhal.lib"]
+    assert "Suggested regression command template" in bat_text

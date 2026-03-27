@@ -53,6 +53,7 @@ def test_run_impact_update_dry_run_builds_auto_and_flag_actions(tmp_path, monkey
             base_ref="HEAD~1",
             changed_files=["Ap_Door.c"],
             dry_run=True,
+            auto_generate=True,
             targets=["uds", "sts"],
             metadata={},
         )
@@ -188,6 +189,7 @@ def test_run_impact_update_executes_auto_and_flag_actions(tmp_path, monkeypatch)
             base_ref="HEAD~1",
             changed_files=["Ap_Door.c", "Ap_Door.h"],
             dry_run=False,
+            auto_generate=True,
             targets=["uds", "sts"],
             metadata={},
         )
@@ -278,6 +280,7 @@ def test_run_impact_update_falls_back_to_file_based_change_types(tmp_path, monke
             base_ref="",
             changed_files=["Sources/APP/Ap_DoorCtrl_PDS.c", "Sources/APP/Ap_DoorCtrl_PDS.h"],
             dry_run=True,
+            auto_generate=True,
             targets=["uds", "sts"],
             metadata={},
         )

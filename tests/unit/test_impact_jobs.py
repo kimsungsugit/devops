@@ -8,12 +8,16 @@ def test_start_impact_job_completes_with_sync_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(impact_jobs, "JOB_DIR", tmp_path / "jobs")
 
     class _SyncThread:
-        def __init__(self, target=None, args=(), kwargs=None, **_extra):
+        def __init__(self, target=None, args=(), kwargs=None, name=None, **_extra):
             self._target = target
             self._args = args
             self._kwargs = kwargs or {}
+            self._name = name
 
         def start(self):
+            # heartbeat thread is skipped to avoid blocking on wait()
+            if "heartbeat" in str(self._name):
+                return
             self._target(*self._args, **self._kwargs)
 
     monkeypatch.setattr(impact_jobs.threading, "Thread", _SyncThread)
@@ -55,12 +59,15 @@ def test_start_impact_job_without_changed_files_completes_cleanly(tmp_path, monk
     monkeypatch.setattr(impact_jobs, "JOB_DIR", tmp_path / "jobs")
 
     class _SyncThread:
-        def __init__(self, target=None, args=(), kwargs=None, **_extra):
+        def __init__(self, target=None, args=(), kwargs=None, name=None, **_extra):
             self._target = target
             self._args = args
             self._kwargs = kwargs or {}
+            self._name = name
 
         def start(self):
+            if self._daemon:
+                return
             self._target(*self._args, **self._kwargs)
 
     monkeypatch.setattr(impact_jobs.threading, "Thread", _SyncThread)

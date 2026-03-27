@@ -79,7 +79,7 @@ def load_vectorcast_project_config(project_id: str = "", source_root: str = "") 
             break
 
     path_defaults = _collect_default_paths(source_root or str(cfg.get("source_root") or ""))
-    cfg["project_id"] = project_token or str(cfg.get("project_id") or "").strip()
+    cfg["project_id"] = str(cfg.get("project_id") or project_token or "").strip()
     cfg["source_root"] = str(source_root or cfg.get("source_root") or "").strip()
     cfg["compiler"] = str(cfg.get("compiler") or "CC").strip() or "CC"
     cfg["linker"] = str(cfg.get("linker") or "").strip()

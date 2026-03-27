@@ -3152,11 +3152,81 @@ def local_sits_view(filename: str, report_dir: Optional[str] = None) -> Dict[str
     )
 
 
+@router.post("/api/local/suts/export-vectorcast")
+def local_suts_export_vectorcast(
+    filename: str = Form(""),
+    report_dir: str = Form(""),
+    source_root: str = Form(""),
+    project_id: str = Form(""),
+    compiler: str = Form("CC"),
+) -> Dict[str, Any]:
+    """Generate a VectorCAST unit-test package from a SUTS file."""
+    from tools.export_suts_vectorcast import export_suts_to_vectorcast_model
+    from tools.export_vectorcast_script import export_vectorcast_package
+
+    base_dir = _resolve_report_dir(report_dir)
+    suts_dir = _local_suts_dir(base_dir)
+    if filename:
+        xlsm_path = suts_dir / filename
+    else:
+        candidates = sorted(suts_dir.glob("*.xlsm"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            raise HTTPException(status_code=404, detail="No SUTS file found")
+        xlsm_path = candidates[0]
+    if not xlsm_path.exists():
+        raise HTTPException(status_code=404, detail="SUTS file not found")
+
+    resolved_source_root = str(source_root or "").strip()
+    cfg = load_vectorcast_project_config(project_id=project_id, source_root=resolved_source_root)
+    effective_project_id = str(project_id or cfg.get("project_id") or "VECTORCAST").strip()
+    effective_source_root = resolved_source_root or str(cfg.get("source_root") or "").strip()
+
+    resolved_source_root = str(source_root or "").strip()
+    cfg = load_vectorcast_project_config(project_id=project_id, source_root=resolved_source_root)
+    effective_source_root = resolved_source_root or str(cfg.get("source_root") or "").strip()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_name = f"suts_vectorcast_{ts}"
+    out_dir = base_dir / "vectorcast" / package_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    intermediate_json = out_dir / "suts_vectorcast_model.json"
+    warnings_md = out_dir / "suts_vectorcast_warnings.md"
+
+    try:
+        model = export_suts_to_vectorcast_model(
+            str(xlsm_path),
+            str(intermediate_json),
+            warnings_md=str(warnings_md),
+            project_id=effective_project_id,
+        )
+        manifest = export_vectorcast_package(
+            str(intermediate_json),
+            str(out_dir),
+            package_name=package_name,
+            source_root=effective_source_root,
+            compiler=str(cfg.get("compiler") or compiler or "CC"),
+            project_config=cfg,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"VectorCAST package generation failed: {e}")
+
+    unit_names = [str(unit.get("unit_name") or "") for unit in model.get("units") or []]
+    return _build_vectorcast_package_response(
+        package_dir=out_dir,
+        package_name=package_name,
+        manifest=manifest,
+        project_config=cfg,
+        units=unit_names,
+    )
+
+
 @router.post("/api/local/sits/export-vectorcast")
 def local_sits_export_vectorcast(
     filename: str = Form(""),
     report_dir: str = Form(""),
     source_root: str = Form(""),
+    project_id: str = Form(""),
     compiler: str = Form("CC"),
 ) -> Dict[str, Any]:
     """Generate a VectorCAST integration test package from a SITS file."""
@@ -3188,24 +3258,34 @@ def local_sits_export_vectorcast(
     out_dir = base_dir / "vectorcast" / package_name
 
     try:
+        model = json.loads(intermediate_json.read_text(encoding="utf-8"))
         manifest = export_sits_vectorcast_package(
             str(intermediate_json),
             str(out_dir),
             package_name=package_name,
-            source_root=source_root,
-            compiler=compiler,
+            source_root=effective_source_root,
+            compiler=str(cfg.get("compiler") or compiler or "CC"),
+            project_config=cfg,
         )
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"VectorCAST 패키지 생성 실패: {e}")
 
-    return {
-        "ok": True,
-        "package_dir": str(out_dir),
-        "package_name": package_name,
-        "manifest": manifest,
-        "files": [str(p.name) for p in out_dir.iterdir() if p.is_file()],
-    }
+    unit_names = sorted(
+        {
+            str(step.split(".", 1)[0]).strip()
+            for item in (model.get("integrations") or [])
+            for step in str(item.get("call_chain") or "").split("->")
+            if str(step).strip()
+        }
+    )
+    return _build_vectorcast_package_response(
+        package_dir=out_dir,
+        package_name=package_name,
+        manifest=manifest,
+        project_config=cfg,
+        units=unit_names,
+    )
 
 
 @router.post("/api/local/scm")
