@@ -20,6 +20,9 @@ def test_start_impact_job_completes_with_sync_thread(tmp_path, monkeypatch):
                 return
             self._target(*self._args, **self._kwargs)
 
+        def join(self, timeout=None):
+            pass
+
     monkeypatch.setattr(impact_jobs.threading, "Thread", _SyncThread)
     monkeypatch.setattr(
         impact_jobs,
@@ -66,9 +69,12 @@ def test_start_impact_job_without_changed_files_completes_cleanly(tmp_path, monk
             self._name = name
 
         def start(self):
-            if self._daemon:
+            if "heartbeat" in str(self._name):
                 return
             self._target(*self._args, **self._kwargs)
+
+        def join(self, timeout=None):
+            pass
 
     monkeypatch.setattr(impact_jobs.threading, "Thread", _SyncThread)
 
