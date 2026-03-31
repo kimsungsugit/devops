@@ -3,15 +3,22 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $PythonCandidates = @(
     (Join-Path $RepoRoot ".venv\Scripts\python.exe"),
     (Join-Path $RepoRoot "backend\venv\Scripts\python.exe"),
+    "C:\msys64\mingw64\bin\python.exe",
     "python"
 )
 
 $PythonExe = $null
+$FallbackPythonExe = $null
 foreach ($candidate in $PythonCandidates) {
     $resolved = $null
     if ($candidate -eq "python") {
@@ -27,6 +34,10 @@ foreach ($candidate in $PythonCandidates) {
         continue
     }
 
+    if (-not $FallbackPythonExe) {
+        $FallbackPythonExe = $resolved
+    }
+
     try {
         $check = & $resolved -c "import importlib.util`ntry:`n    s = importlib.util.find_spec('google.genai')`n    print('OK' if s else 'MISSING')`nexcept Exception:`n    print('MISSING')" 2>$null
         if (($check | Out-String).Trim() -eq "OK") {
@@ -34,12 +45,16 @@ foreach ($candidate in $PythonCandidates) {
             break
         }
     } catch {
-        Write-RunLog ("Python candidate check failed: " + $resolved + " :: " + $_.Exception.Message)
+        # Write-RunLog not yet defined; silently continue
     }
 }
 
 if (-not $PythonExe) {
-    throw "Python executable not found."
+    if ($FallbackPythonExe) {
+        $PythonExe = $FallbackPythonExe
+    } else {
+        throw "Python executable not found."
+    }
 }
 
 $today = Get-Date -Format "yyyy-MM-dd"
@@ -62,6 +77,10 @@ function Write-RunLog {
 
     $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
     Add-Content -Path $runLog -Value $line -Encoding UTF8
+}
+
+if ($FallbackPythonExe -and -not $PythonExe) {
+    Write-RunLog ("google.genai not found; using fallback Python: " + $FallbackPythonExe)
 }
 
 function Write-RetryCommand {
